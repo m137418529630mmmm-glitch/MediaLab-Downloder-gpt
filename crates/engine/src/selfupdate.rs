@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 /// Set at build time with `MEDIALAB_UPDATE_REPO` (the build workflow does it).
 pub const REPO: &str = match option_env!("MEDIALAB_UPDATE_REPO") {
     Some(r) if !r.is_empty() => r,
-    _ => "m137418529630mmmm-glitch/MediaLab-Downloder",
+    _ => "m137418529630mmmm-glitch/MediaLab-Downloder-gpt",
 };
 pub const SETUP_NAME: &str = "MediaLab-Downloader-Setup.exe";
 
