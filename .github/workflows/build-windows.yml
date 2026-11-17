@@ -111,7 +111,7 @@ jobs:
           repo = os.environ["GITHUB_REPOSITORY"]
           setup = Path("dist/MediaLab-Downloader-Setup.exe")
           digest = hashlib.sha256(setup.read_bytes()).hexdigest()
-          message = f"medialab-downloader-update\\n{version.strip()}\\n{digest.lower()}\\n".encode()
+          message = f"medialab-downloader-update\n{version.strip()}\n{digest.lower()}\n".encode()
           key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(os.environ["UPDATE_SIGNING_KEY"]))
           signature = key.sign(message).hex()
           tag = "v" + version
@@ -121,7 +121,7 @@ jobs:
               "sha256": digest,
               "sig": signature
           }
-          Path("dist/version.json").write_text(json.dumps(data, indent=2) + "\\n", encoding="utf-8")
+          Path("dist/version.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
           '@ | python -
 
       - name: Publish or update GitHub Release
