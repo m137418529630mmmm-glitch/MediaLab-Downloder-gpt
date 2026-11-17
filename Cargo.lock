@@ -4153,7 +4153,7 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "medialab-host"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "ring",
  "serde_json",
@@ -6618,7 +6618,7 @@ dependencies = [
 
 [[package]]
 name = "swiftget"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "anyhow",
  "arboard",
@@ -6644,7 +6644,7 @@ dependencies = [
 
 [[package]]
 name = "swiftget-engine"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "aes",
  "anyhow",
