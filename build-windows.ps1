@@ -173,7 +173,7 @@ if ((Test-Path $signedXpi) -and ((Get-XpiVersion $signedXpi) -eq $extVersion)) {
     Copy-Item $signedXpi $xpiOut -Force
 } else {
     try {
-        Invoke-WebRequest "https://github.com/m137418529630mmmm-glitch/MediaLab-Downloder/releases/latest/download/medialab-downloader-firefox.xpi" -OutFile $xpiOut
+        Invoke-WebRequest "https://github.com/m137418529630mmmm-glitch/MediaLab-Downloder-gpt/releases/latest/download/medialab-downloader-firefox.xpi" -OutFile $xpiOut
         if ((Get-XpiVersion $xpiOut) -ne $extVersion) { Remove-Item $xpiOut -Force }
     } catch {
         Remove-Item $xpiOut -Force -ErrorAction SilentlyContinue
@@ -247,7 +247,7 @@ if ($iscc) {
         # version.json: the program reads it from the latest GitHub release
         # to update itself (version + SHA-256 of the installer)
         $hash = (Get-FileHash $setup -Algorithm SHA256).Hash.ToLower()
-        $json = "{`n  ""version"": ""$version"",`n  ""url"": ""https://github.com/m137418529630mmmm-glitch/MediaLab-Downloder/releases/download/v$version/MediaLab-Downloader-Setup.exe"",`n  ""sha256"": ""$hash""`n}`n"
+        $json = "{`n  ""version"": ""$version"",`n  ""url"": ""https://github.com/m137418529630mmmm-glitch/MediaLab-Downloder-gpt/releases/download/v$version/MediaLab-Downloader-Setup.exe"",`n  ""sha256"": ""$hash""`n}`n"
         [IO.File]::WriteAllText((Join-Path $dist "version.json"), $json)
     } else {
         Fail "Could not create the setup. Tip: move this folder out of Desktop/OneDrive (e.g. to C:\MediaLab) and run BUILD.bat again."
