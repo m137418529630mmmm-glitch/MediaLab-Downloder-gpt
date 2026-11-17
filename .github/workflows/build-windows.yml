@@ -1,0 +1,65 @@
+name: Build MediaLab Downloader (Windows)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Build Windows x64 installer
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+      - name: Build application and browser host
+        run: cargo build --release --locked --target x86_64-pc-windows-msvc
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+      - name: Prepare installer files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = Join-Path $env:GITHUB_WORKSPACE 'build-cache\stage'
+          New-Item -ItemType Directory -Force "$stage\tools", "$stage\extension", "$stage\extension-firefox", 'dist' | Out-Null
+          Copy-Item 'target\x86_64-pc-windows-msvc\release\MediaLabDownloader.exe' $stage
+          Copy-Item 'target\x86_64-pc-windows-msvc\release\medialab-host.exe' $stage
+          Copy-Item 'THIRD-PARTY-NOTICES.txt' $stage
+          Set-Content -Path "$stage\LICENSE.txt" -Value 'See THIRD-PARTY-NOTICES.txt and the source repository for license information.' -Encoding UTF8
+          Copy-Item 'extension\*' "$stage\extension" -Recurse -Force
+          Remove-Item "$stage\extension\test" -Recurse -Force -ErrorAction SilentlyContinue
+          Copy-Item 'extension\*' "$stage\extension-firefox" -Recurse -Force
+          Remove-Item "$stage\extension-firefox\test" -Recurse -Force -ErrorAction SilentlyContinue
+          Copy-Item "$stage\extension-firefox\manifest.firefox.json" "$stage\extension-firefox\manifest.json" -Force
+          Remove-Item "$stage\extension-firefox\manifest.firefox.json" -Force
+          Remove-Item "$stage\extension\manifest.firefox.json" -Force -ErrorAction SilentlyContinue
+          $version = ([regex]::Match((Get-Content Cargo.toml -Raw), '(?m)^version\s*=\s*"([^"]+)"')).Groups[1].Value
+          if (-not $version) { throw 'Could not read version from Cargo.toml' }
+          "MEDIALAB_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Compile installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $iscc = Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe'
+          if (-not (Test-Path $iscc)) { throw "Inno Setup compiler not found: $iscc" }
+          & $iscc '/Q' "/DMyAppVersion=$env:MEDIALAB_VERSION" "/DStage=$env:GITHUB_WORKSPACE\build-cache\stage" 'installer\medialab.iss'
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed with exit code $LASTEXITCODE" }
+          if (-not (Test-Path 'dist\MediaLab-Downloader-Setup.exe')) { throw 'Installer output was not created' }
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MediaLab-Downloader-Windows-${{ github.run_number }}
+          path: dist/MediaLab-Downloader-Setup.exe
+          if-no-files-found: error
+          retention-days: 14
