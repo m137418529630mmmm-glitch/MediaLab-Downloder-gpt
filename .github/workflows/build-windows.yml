@@ -9,7 +9,49 @@ permissions:
   contents: write
 
 jobs:
+  ffmpeg:
+    name: Build slim FFmpeg from source (required)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      FFMPEG_TAG: n8.0.3
+      FFMPEG_COMMIT: 8ae0b34901ba60a802f183ee75a250a9fc3e09a5
+      LAME_URL: https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz
+      LAME_SHA256: ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
+      OPENH264_TAG: v2.6.0
+      OPENH264_COMMIT: 652bdb7719f30b52b08e506645a7322ff1b2cc6f
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cross-build tools
+        run: sudo apt-get update -y && sudo apt-get install -y mingw-w64 nasm pkg-config make
+      - name: Fetch pinned sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone -q --depth 1 --branch "$FFMPEG_TAG" https://github.com/FFmpeg/FFmpeg ffmpeg-src
+          test "$(git -C ffmpeg-src rev-parse HEAD)" = "$FFMPEG_COMMIT"
+          curl -sSfL -o lame.tar.gz "$LAME_URL"
+          echo "$LAME_SHA256  lame.tar.gz" | sha256sum -c -
+          tar xzf lame.tar.gz
+          git clone -q --depth 1 --branch "$OPENH264_TAG" https://github.com/cisco/openh264 openh264-src
+          test "$(git -C openh264-src rev-parse HEAD)" = "$OPENH264_COMMIT"
+      - name: Build FFmpeg (must succeed)
+        shell: bash
+        run: |
+          set -euo pipefail
+          CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ tools/ffmpeg/build.sh ffmpeg-src lame-3.100 openh264-src ffmpeg-out
+          test -s ffmpeg-out/ffmpeg.exe
+          ffmpeg-out/ffmpeg.exe -version
+      - name: Upload FFmpeg artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: medialab-slim-ffmpeg
+          path: ffmpeg-out/
+          if-no-files-found: error
+          retention-days: 2
+
   build-release:
+    needs: ffmpeg
     name: Build, sign and publish Windows update
     runs-on: windows-latest
     timeout-minutes: 75
@@ -50,6 +92,19 @@ jobs:
               f.write("MEDIALAB_UPDATE_PUBLIC_KEY=" + public + "\n")
           '@ | python -
 
+      - name: Download FFmpeg artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: medialab-slim-ffmpeg
+          path: ffmpeg-out
+      - name: Verify FFmpeg executable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path 'ffmpeg-out/ffmpeg.exe')) { throw 'FFmpeg artifact missing ffmpeg.exe' }
+          & 'ffmpeg-out/ffmpeg.exe' -version
+          if ($LASTEXITCODE -ne 0) { throw 'FFmpeg executable failed smoke test' }
+
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@v2
 
@@ -73,6 +128,7 @@ jobs:
           New-Item -ItemType Directory -Force "$stage\tools", "$stage\extension", "$stage\extension-firefox", 'dist' | Out-Null
           Copy-Item 'target\x86_64-pc-windows-msvc\release\MediaLabDownloader.exe' $stage
           Copy-Item 'target\x86_64-pc-windows-msvc\release\medialab-host.exe' $stage
+          Copy-Item ffmpeg-out/* $stage/tools/ -Force
           Copy-Item 'THIRD-PARTY-NOTICES.txt' $stage
           Set-Content -Path "$stage\LICENSE.txt" -Value 'See THIRD-PARTY-NOTICES.txt and the source repository for license information.' -Encoding UTF8
           Copy-Item 'extension\*' "$stage\extension" -Recurse -Force
