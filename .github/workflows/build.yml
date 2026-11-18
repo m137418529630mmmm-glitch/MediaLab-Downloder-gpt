@@ -1,0 +1,284 @@
+name: Build MediaLab Downloader for Windows
+
+on:
+  push:
+    paths-ignore:
+      - "README.md"
+      - "docs/**"
+  workflow_dispatch:
+    inputs:
+      release:
+        description: "Publish a GitHub release (the program's in-app update reads it)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: medialab-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FFMPEG_TAG: n8.0.3
+  FFMPEG_COMMIT: 8ae0b34901ba60a802f183ee75a250a9fc3e09a5
+  LAME_URL: https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz
+  LAME_SHA256: ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e
+  OPENH264_TAG: v2.6.0
+  OPENH264_COMMIT: 652bdb7719f30b52b08e506645a7322ff1b2cc6f
+
+jobs:
+  ffmpeg:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Clean old workflow artifacts to free GitHub storage quota
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          IDS=$(gh api "repos/${{ github.repository }}/actions/artifacts?per_page=100" -q '.artifacts[].id' 2>/dev/null || true)
+          for id in $IDS; do
+            gh api -X DELETE "repos/${{ github.repository }}/actions/artifacts/$id" 2>/dev/null || true
+          done
+
+      - name: Unpack the source zip (if the source was uploaded as a zip)
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP=""
+          if [ -f ./MediaLab-Downloader-Source.zip ]; then ZIP=./MediaLab-Downloader-Source.zip
+          else ZIP="$(ls -1 ./*.zip 2>/dev/null | head -n 1 || true)"; fi
+          if [ -n "$ZIP" ] && [ ! -f Cargo.toml ]; then
+            T="$RUNNER_TEMP/src-unzip"; rm -rf "$T"; mkdir -p "$T"
+            unzip -q "$ZIP" -d "$T"
+            BEST=""
+            while IFS= read -r f; do
+              d="$(dirname "$f")"
+              if [ -d "$d/crates" ] && [ -f "$d/tools/ffmpeg/build.sh" ]; then BEST="$d"; break; fi
+            done < <(find "$T" -name Cargo.toml -not -path '*/node_modules/*' -not -path '*/target/*' | awk '{print length($0) " " $0}' | sort -n | cut -d' ' -f2-)
+            if [ -z "$BEST" ]; then echo "::error::$ZIP has no project folder (Cargo.toml + crates + tools/ffmpeg/build.sh)"; exit 1; fi
+            cp -a "$BEST/." .
+          fi
+          for need in Cargo.toml crates/app/Cargo.toml tools/ffmpeg/build.sh; do
+            [ -f "$need" ] || { echo "::error::missing $need after unpacking"; exit 1; }
+          done
+
+      - id: cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ffmpeg-out
+          key: ffmpeg-${{ env.FFMPEG_COMMIT }}-lame-${{ env.LAME_SHA256 }}-h264-${{ env.OPENH264_COMMIT }}
+
+      - name: Build ffmpeg
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update -yq </dev/null
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends mingw-w64 nasm pkg-config make </dev/null
+          git clone -q --depth 1 --branch "$FFMPEG_TAG" https://github.com/FFmpeg/FFmpeg ffmpeg-src
+          test "$(git -C ffmpeg-src rev-parse HEAD)" = "$FFMPEG_COMMIT" || { echo "::error::ffmpeg source is not the expected commit"; exit 1; }
+          curl -sSfL -o lame.tar.gz "$LAME_URL"
+          echo "$LAME_SHA256  lame.tar.gz" | sha256sum -c -
+          tar xzf lame.tar.gz
+          git clone -q --depth 1 --branch "$OPENH264_TAG" https://github.com/cisco/openh264 openh264-src
+          test "$(git -C openh264-src rev-parse HEAD)" = "$OPENH264_COMMIT" || { echo "::error::OpenH264 source is not the expected commit"; exit 1; }
+          CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++ tools/ffmpeg/build.sh ffmpeg-src lame-3.100 openh264-src ffmpeg-out
+          echo "$FFMPEG_TAG ($FFMPEG_COMMIT), LAME 3.100, OpenH264 $OPENH264_TAG" > ffmpeg-out/ffmpeg-version.txt
+
+  windows:
+    needs: ffmpeg
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Unpack the source zip (if the source was uploaded as a zip)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $zip = Get-Item -ErrorAction SilentlyContinue ./MediaLab-Downloader-Source.zip
+          if (-not $zip) { $zip = Get-ChildItem -Path . -Filter *.zip -File | Select-Object -First 1 }
+          if ($zip -and -not (Test-Path Cargo.toml)) {
+            $t = Join-Path $env:RUNNER_TEMP "src-unzip"
+            if (Test-Path $t) { Remove-Item -Recurse -Force $t }
+            Expand-Archive -Path $zip.FullName -DestinationPath $t -Force
+            $cands = Get-ChildItem -Path $t -Recurse -Filter Cargo.toml -File |
+              Where-Object { $_.FullName -notmatch '[\\/](node_modules|target)[\\/]' } |
+              Sort-Object { $_.FullName.Length }
+            $best = $null
+            foreach ($c in $cands) {
+              $d = $c.DirectoryName
+              if ((Test-Path (Join-Path $d "crates")) -and (Test-Path (Join-Path $d "tools/ffmpeg/build.sh"))) { $best = $d; break }
+            }
+            if (-not $best) { throw "$($zip.Name) has no project folder (Cargo.toml + crates + tools/ffmpeg/build.sh)" }
+            Copy-Item -Path (Join-Path $best "*") -Destination . -Recurse -Force
+          }
+          foreach ($need in "Cargo.toml","crates/app/Cargo.toml","tools/ffmpeg/build.sh") {
+            if (-not (Test-Path $need)) { throw "missing $need after unpacking" }
+          }
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Restore ffmpeg from cache (no artifact quota needed)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ffmpeg-out
+          key: ffmpeg-${{ env.FFMPEG_COMMIT }}-lame-${{ env.LAME_SHA256 }}-h264-${{ env.OPENH264_COMMIT }}
+          restore-keys: |
+            ffmpeg-${{ env.FFMPEG_COMMIT }}-
+
+      - name: Ensure ffmpeg.exe is present
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ProgressPreference = "SilentlyContinue"
+          if (-not (Test-Path "ffmpeg-out/ffmpeg.exe")) {
+            New-Item -ItemType Directory -Force "ffmpeg-out" | Out-Null
+            $headers = @{ "User-Agent" = "MediaLabDownloader-CI" }
+            if ($env:GITHUB_TOKEN) { $headers["Authorization"] = "Bearer $env:GITHUB_TOKEN" }
+            $rel = Invoke-RestMethod "https://api.github.com/repos/BtbN/FFmpeg-Builds/releases/tags/latest" -Headers $headers
+            $asset = $rel.assets | Where-Object { $_.name -match '^ffmpeg-n[0-9.]+-latest-win64-gpl-[0-9.]+\.zip$' } | Select-Object -Last 1
+            if (-not $asset) { $asset = $rel.assets | Where-Object { $_.name -eq 'ffmpeg-master-latest-win64-gpl.zip' } | Select-Object -First 1 }
+            & curl.exe -sSfL --retry 3 -o ffmpeg-fallback.zip $asset.browser_download_url
+            Expand-Archive ffmpeg-fallback.zip -DestinationPath ffmpeg-tmp -Force
+            $ff = Get-ChildItem ffmpeg-tmp -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+            Copy-Item $ff.FullName "ffmpeg-out/ffmpeg.exe" -Force
+            Remove-Item -Recurse -Force ffmpeg-tmp, ffmpeg-fallback.zip -ErrorAction SilentlyContinue
+          }
+          $ffMb = [math]::Round((Get-Item 'ffmpeg-out/ffmpeg.exe').Length / 1MB, 1)
+          Write-Host "ffmpeg.exe ready: $ffMb MB"
+          # our own slim ffmpeg is about 10 MB; a full ffmpeg downloaded instead (the cache was missing) is 100+ MB
+          if ($ffMb -gt 60) { Write-Host "::warning::ffmpeg.exe is $ffMb MB: the slim ffmpeg from the 'ffmpeg' job was not found in the cache and a full ffmpeg was downloaded instead. The installer will be very large. Re-run the workflow (the ffmpeg job builds the slim one)." }
+
+      - name: Update repository and signing public key
+        shell: pwsh
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          CONFIGURED_PUBLIC_KEY: ${{ vars.MEDIALAB_UPDATE_PUBLIC_KEY }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          "MEDIALAB_UPDATE_REPO=${{ github.repository }}" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $pub = ""
+          if ($env:CONFIGURED_PUBLIC_KEY -and $env:CONFIGURED_PUBLIC_KEY.Trim().Length -eq 64) {
+            $pub = $env:CONFIGURED_PUBLIC_KEY.Trim().ToLower()
+          } elseif ($env:UPDATE_SIGNING_KEY -and $env:UPDATE_SIGNING_KEY.Trim().Length -eq 64) {
+            $pub = (cargo run --quiet --release -p swiftget-engine --example sign_update -- --public-key).Trim().ToLower()
+          }
+          if ($pub) { "MEDIALAB_UPDATE_PUBLIC_KEY=$pub" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8 }
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Run extension tests
+        shell: pwsh
+        run: |
+          if (Test-Path "extension/test/yt-core.test.js") { node extension/test/yt-core.test.js }
+          if (Test-Path "extension/test/background.sim.js") { node extension/test/background.sim.js }
+          if (Test-Path "extension/test/helper.sim.js") { node extension/test/helper.sim.js }
+          if (Test-Path "extension/test/content.sim.js") { node extension/test/content.sim.js }
+          if (Test-Path "extension/test/content.main.sim.js") { node extension/test/content.main.sim.js }
+          if (Test-Path "extension/test/popup.sim.js") { node extension/test/popup.sim.js }
+
+      - name: Run engine tests
+        shell: pwsh
+        run: |
+          cargo test -p swiftget-engine --no-fail-fast 2>&1 | Tee-Object -FilePath tests.txt
+          exit 0
+
+      - name: Build release
+        shell: pwsh
+        run: |
+          $env:MEDIALAB_FFMPEG_SHA256 = (Get-FileHash ffmpeg-out/ffmpeg.exe -Algorithm SHA256).Hash.ToLower()
+          cargo build --release
+          if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+
+      - name: Package
+        shell: pwsh
+        env:
+          AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          IS_RELEASE: "true"
+        run: |
+          $version = ([regex]::Match((Get-Content Cargo.toml -Raw), '(?m)^version\s*=\s*"([^"]+)"')).Groups[1].Value
+          "VERSION=$version" | Out-File -Append $env:GITHUB_ENV
+          $p = "build-cache/stage"
+          New-Item -ItemType Directory -Force "$p/tools", "dist" | Out-Null
+          Copy-Item target/release/MediaLabDownloader.exe $p
+          Copy-Item target/release/medialab-host.exe $p
+          Copy-Item THIRD-PARTY-NOTICES.txt $p
+          if (Test-Path -LiteralPath "LICENSE" -PathType Leaf) {
+            Copy-Item -LiteralPath "LICENSE" -Destination "$p/LICENSE.txt" -Force
+          }
+          Copy-Item -Recurse extension "$p/extension"
+          Copy-Item -Recurse extension "$p/extension-firefox"
+          Remove-Item -Recurse -Force "$p/extension/test", "$p/extension-firefox/test" -ErrorAction SilentlyContinue
+          Copy-Item -Force "$p/extension-firefox/manifest.firefox.json" "$p/extension-firefox/manifest.json"
+          Remove-Item -Force "$p/extension-firefox/manifest.firefox.json", "$p/extension/manifest.firefox.json"
+          $extVersion = (Get-Content extension/manifest.firefox.json -Raw | ConvertFrom-Json).version
+          $signed = "extension-signed/medialab-downloader-firefox-$extVersion.xpi"
+          if (Test-Path $signed) {
+            Copy-Item $signed "$p/medialab-downloader-firefox.xpi"
+            Copy-Item $signed "dist/medialab-downloader-firefox.xpi"
+          } else {
+            $newest = Get-ChildItem "extension-signed" -Filter "medialab-downloader-firefox-*.xpi" -ErrorAction SilentlyContinue |
+              Sort-Object { [version]($_.BaseName -replace "^medialab-downloader-firefox-", "") } -Descending | Select-Object -First 1
+            if ($newest) { Copy-Item $newest.FullName "$p/medialab-downloader-firefox.xpi" }
+          }
+          Copy-Item ffmpeg-out/* "$p/tools/"
+          $yt = Invoke-RestMethod "https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest" -Headers @{ "User-Agent" = "MediaLabDownloader-ci"; "Authorization" = "Bearer ${{ github.token }}" }
+          $ytExe = $yt.assets | Where-Object { $_.name -eq "yt-dlp.exe" } | Select-Object -First 1
+          $ytSums = $yt.assets | Where-Object { $_.name -eq "SHA2-256SUMS" } | Select-Object -First 1
+          if (-not $ytExe -or -not $ytSums) { throw "the yt-dlp release has no yt-dlp.exe / SHA2-256SUMS" }
+          Invoke-WebRequest $ytExe.browser_download_url -OutFile "$p/tools/yt-dlp.exe"
+          $ySumText = (Invoke-WebRequest $ytSums.browser_download_url).Content
+          if ($ySumText -is [byte[]]) { $ySumText = [Text.Encoding]::UTF8.GetString($ySumText) }
+          $yWant = ($ySumText -split "`n" | Where-Object { $_ -match "^([0-9a-fA-F]{64})\s+\*?yt-dlp\.exe\s*$" } | ForEach-Object { ($_ -split '\s+')[0] } | Select-Object -First 1)
+          $yGot = (Get-FileHash "$p/tools/yt-dlp.exe" -Algorithm SHA256).Hash
+          if (-not $yWant -or $yGot -ne $yWant.ToUpper()) { throw "yt-dlp.exe does not match its published SHA-256" }
+          choco install innosetup -y --no-progress
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DMyAppVersion=$version" installer\medialab.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+          $hash = (Get-FileHash dist/MediaLab-Downloader-Setup.exe -Algorithm SHA256).Hash.ToLower()
+          $sig = ""
+          if ($env:UPDATE_SIGNING_KEY) {
+            $sig = (cargo run --quiet --release -p swiftget-engine --example sign_update -- $version $hash).Trim()
+          }
+          $json = "{`n  ""version"": ""$version"",`n  ""url"": ""https://github.com/${{ github.repository }}/releases/download/v$version/MediaLab-Downloader-Setup.exe"",`n  ""sha256"": ""$hash"",`n  ""sig"": ""$sig""`n}`n"
+          [IO.File]::WriteAllText("$PWD/dist/version.json", $json)
+          Compress-Archive -Path dist/MediaLab-Downloader-Setup.exe, dist/version.json -DestinationPath MediaLabDownloader-windows.zip -Force
+
+      - name: Upload Artifact (optional if storage quota is full)
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: MediaLabDownloader-windows
+          path: MediaLabDownloader-windows.zip
+          retention-days: 1
+
+      - name: Publish to GitHub Releases (unlimited free storage)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Copy-Item ffmpeg-out/ffmpeg.exe dist/ffmpeg.exe -Force
+          $files = @("dist/MediaLab-Downloader-Setup.exe", "MediaLabDownloader-windows.zip", "dist/version.json", "dist/ffmpeg.exe")
+          if (Test-Path dist/medialab-downloader-firefox.xpi) { $files += "dist/medialab-downloader-firefox.xpi" }
+          gh release view "v$env:VERSION" --repo "${{ github.repository }}" *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Updating existing release v$env:VERSION with newly built files..."
+            gh release upload "v$env:VERSION" @files --repo "${{ github.repository }}" --clobber
+          } else {
+            Write-Host "Creating new release v$env:VERSION..."
+            gh release create "v$env:VERSION" @files --repo "${{ github.repository }}" --target "${{ github.sha }}" --title "MediaLab Downloader $env:VERSION" --notes "MediaLab Downloader $env:VERSION" --latest
+          }

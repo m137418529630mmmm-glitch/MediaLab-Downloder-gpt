@@ -21,10 +21,16 @@
   // off, reloaded) `chrome.runtime` is not there any more and a plain call throws a TypeError.
   const safeSend = (msg, cb) => {
     try {
-      if (!alive()) return shutdown();
-      chrome.runtime.sendMessage(msg, cb);
+      if (!alive()) {
+        shutdown();
+        return Promise.resolve();
+      }
+      const r = chrome.runtime.sendMessage(msg, cb);
+      if (r && typeof r.catch === "function") r.catch(() => {}); // (a refused message is no error)
+      return Promise.resolve();
     } catch (e) {
       if (/context invalidated|sendMessage|undefined|chrome\.runtime/i.test(String((e && e.message) || e))) shutdown();
+      return Promise.resolve();
     }
   };
   const timers = [];
@@ -345,7 +351,7 @@
     if (page !== lastPage || (!TOP && !lastPage)) {
       if (!TOP && lastPage === "frame:" + page) return;
       lastPage = TOP ? page : "frame:" + page;
-      safeSend({ type: "swiftget-video-seen", page, frame: !TOP, feed: TOP && !page && inFeed() }).catch?.(() => {});
+      safeSend({ type: "swiftget-video-seen", page, frame: !TOP, feed: TOP && !page && inFeed() });
     }
   }
 
@@ -589,6 +595,34 @@
     }
     return cands[0] || "";
   }
+  // A thumbnail card of a site the add-in has no rule for: a link whose big picture / video leads
+  // to a page that is a video's ("/stock-video/…", "/clip/…", "/footage/…", "/watch/…").
+  const genericCards = new WeakSet();
+  const VIDEOISH_PATH = /(^|\/)(stock-)?(video|videos|clip|clips|footage|film|films|movie|movies|watch|reel|reels|shorts|vid|player|play)(\/|-|_|$)/i;
+  function looksLikeVideoCard(a) {
+    if (a.tagName !== "A" || !a.href || !/^https?:/i.test(a.href)) return false;
+    let u;
+    try {
+      u = new URL(a.href);
+    } catch (_) {
+      return false;
+    }
+    if (u.pathname.length < 2 || (u.origin === location.origin && u.pathname === location.pathname)) return false;
+    const r = a.getBoundingClientRect();
+    if (r.width < 160 || r.height < 90 || r.width > 900 || r.height > 700) return false;
+    // the card is a picture / a video (not a text link)
+    let media = null;
+    for (const m of a.querySelectorAll("video, canvas, img, picture")) {
+      const mr = m.getBoundingClientRect();
+      if (mr.width * mr.height >= r.width * r.height * 0.5) {
+        media = m;
+        break;
+      }
+    }
+    if (!media) return false;
+    if (media.tagName === "VIDEO" || media.tagName === "CANVAS") return true;
+    return VIDEOISH_PATH.test(u.pathname) || /video|clip|footage|play/i.test((a.getAttribute("aria-label") || "") + " " + (a.getAttribute("title") || ""));
+  }
   // what is under the mouse: a video, or a card that links to one
   function candidateFrom(e) {
     const path = e.composedPath ? e.composedPath() : [e.target];
@@ -601,7 +635,7 @@
       const tag = n.tagName;
       if (!tag) continue;
       if (!vid && tag === "VIDEO") vid = n;
-      else if (!card && tag === "A" && n.href && isVideoPage(n.href)) card = n;
+      else if (!card && tag === "A" && n.href && (isVideoPage(n.href) || (looksLikeVideoCard(n) && (genericCards.add(n), true)))) card = n;
     }
     if (card) {
       const cr = cardRect(card);
@@ -1510,7 +1544,7 @@
         type: "swiftget-resolve-video",
         resolve: stream || "",
         // in a frame that is only a player: the add-in uses the page around it
-        page: ownLink(b.video) || (hover || directSrc(b.video) || !TOP || inFeed() ? "" : location.href),
+        page: ownLink(b.video) || (genericCards.has(b.video) && !quiet ? cleanLink(b.video.href) : hover || directSrc(b.video) || !TOP || inFeed() ? "" : location.href),
         // a video the mouse is on (a hover preview): its own streams, those opened since the
         // mouse came to it, are this video; the page around it is not
         hover,
@@ -2463,7 +2497,7 @@
     addEventListener(
       "mousedown",
       (e) => {
-        safeSend({ type: "swiftget-keys", alt: e.altKey, ctrl: e.ctrlKey, shift: e.shiftKey }).catch?.(() => {});
+        safeSend({ type: "swiftget-keys", alt: e.altKey, ctrl: e.ctrlKey, shift: e.shiftKey });
       },
       true
     );

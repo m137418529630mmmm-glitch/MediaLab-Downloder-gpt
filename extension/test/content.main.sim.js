@@ -90,6 +90,17 @@ big.rect = keepRect; advance(400);
 check(shownHosts().length === 1, "and after");
 big.rect = { left: 100, top: -900, right: 900, bottom: -450, width: 800, height: 450 }; advance(300);
 check(shownHosts().length === 0, "gone at once when the video is scrolled away (not a blip)");
+// ---- a click in the page (the add-in tells the background which keys are held): no TypeError on `.catch`
+let clickErr = null;
+try { const e = new Ev("mousedown", { clientX: 5, clientY: 5, target: body, altKey: false, ctrlKey: false, shiftKey: false }); e._path = [body, html]; (wl.mousedown || []).forEach((f) => f(e)); advance(2000); } catch (e) { clickErr = e; }
+check(!clickErr, "a click and the page being watched throw no error" + (clickErr ? ": " + clickErr.message : ""));
+// ---- a site with no rule: a picture card that links to /stock-video/…
+const card = new El("a"); card.attrs.href = "https://example.org/stock-video/mommy-and-baby-hands-155903/"; card.rect = { left: 400, top: 120, right: 880, bottom: 360, width: 480, height: 240 };
+const img = new El("img"); img.rect = { left: 400, top: 120, right: 880, bottom: 360, width: 480, height: 240 }; card.appendChild(img); body.appendChild(card);
+big.rect = { left: 0, top: -900, right: 800, bottom: -450, width: 800, height: 450 };
+const m2 = (el, path) => { const e = new Ev("mousemove", { clientX: 500, clientY: 200, target: el }); e._path = path; (wl.mousemove || []).forEach((f) => f(e)); };
+advance(300); m2(img, [img, card, body, html]); advance(400);
+check(shownHosts().length === 1, "a button on a picture card of any site (its link says it is a video's page)");
 // the add-in is gone and "chrome.runtime" with it: nothing throws (the TypeError of the console)
 big.rect = { left: 100, top: 80, right: 900, bottom: 530, width: 800, height: 450 }; advance(800);
 chrome.runtime = undefined;

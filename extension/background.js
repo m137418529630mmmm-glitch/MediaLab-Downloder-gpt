@@ -1258,6 +1258,7 @@ function optionItems(resolved, source) {
 /** Everything the page button and the popup show, in one list. */
 // what the page's video is called and how it looks, told by the page's script at the time the
 // mouse (or the player) came to it: the streams that open right after belong to it
+const lastHoverAt = new Map(); // tabId -> when the mouse last came to a video / card
 const metaKey = (tabId) => `metas_${tabId}`;
 async function loadMetas(tabId) {
   const k = metaKey(tabId);
@@ -1764,7 +1765,9 @@ chrome.webRequest.onHeadersReceived.addListener(
     if (cr) size = Number(cr[1]);
     else if (h["content-length"]) size = Number(h["content-length"]);
     // tiny clips and ads are left out; a sound can be small (a sound effect)
-    if (isMedia && size > 0 && size < (/^audio\//i.test(type) ? 24 : 300) * 1024) return;
+    // (a preview clip of a thumbnail is small: it counts while the mouse is on a card)
+    const nearHover = Date.now() - (lastHoverAt.get(d.tabId) || 0) < 8000;
+    if (isMedia && size > 0 && size < (/^audio\//i.test(type) ? 24 : nearHover ? 40 : 300) * 1024) return;
 
     addMedia(d.tabId, {
       url,
@@ -2357,6 +2360,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     case "swiftget-hover-meta": {
       if (!sender.tab || !enabledNow) return false;
+      if (msg.hover) lastHoverAt.set(sender.tab.id, Date.now());
       const keys = Array.isArray(msg.keys) ? msg.keys.map((k) => String(k).toLowerCase()).slice(0, 12) : [];
       const entry = {
         id: String(msg.id || ""),
