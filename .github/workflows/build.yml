@@ -1,16 +1,13 @@
 name: Build MediaLab Downloader for Windows
 
 on:
-  push:
-    paths-ignore:
-      - "README.md"
-      - "docs/**"
+  # Manual-only legacy workflow. Automatic builds/releases are handled by build-windows.yml.
   workflow_dispatch:
     inputs:
       release:
-        description: "Publish a GitHub release (the program's in-app update reads it)"
+        description: "Manual legacy build (automatic releases use build-windows.yml)"
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: write
