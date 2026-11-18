@@ -41,7 +41,8 @@ jobs:
           set -euo pipefail
           CC=x86_64-w64-mingw32-gcc-posix CXX=x86_64-w64-mingw32-g++-posix bash tools/ffmpeg/build.sh ffmpeg-src lame-3.100 openh264-src ffmpeg-out
           test -s ffmpeg-out/ffmpeg.exe
-          ffmpeg-out/ffmpeg.exe -version
+          file ffmpeg-out/ffmpeg.exe
+          x86_64-w64-mingw32-objdump -f ffmpeg-out/ffmpeg.exe | grep -q 'architecture: i386:x86-64'
       - name: Upload FFmpeg artifact
         uses: actions/upload-artifact@v4
         with:
