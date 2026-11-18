@@ -214,7 +214,7 @@ pub fn cut_args(inputs: &[String], from: f64, len: f64, exact_with: Option<(&str
                 }
                 a.extend(["-vf", "format=yuv420p", "-c:a", "aac", "-b:a", "192k"].map(String::from));
             }
-            None => a.extend(["-c", "copy", "-avoid_negative_ts", "make_zero"].map(String::from)),
+            None => a.extend(["-c", "copy", "-avoid_negative_ts", "make_zero", "-use_editlist", "0"].map(String::from)),
         }
         a.extend(["-movflags", "+faststart", "-f", "mp4"].map(String::from));
     } else {

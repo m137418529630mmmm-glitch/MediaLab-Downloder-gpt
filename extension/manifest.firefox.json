@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "MediaLab Downloader",
-  "version": "1.0.11",
+  "version": "1.0.13",
   "description": "MediaLab Downloader extension.",
   "permissions": [
     "downloads",
@@ -76,7 +76,7 @@
     "gecko": {
       "id": "medialab-downloader@medialab.local",
       "strict_min_version": "140.0",
-      "update_url": "https://github.com/m137418529630mmmm-glitch/MediaLab-Downloder/releases/latest/download/firefox-updates.json",
+      "update_url": "https://github.com/m137418529630mmmm-glitch/MediaLab-Downloder-gpt/releases/latest/download/firefox-updates.json",
       "data_collection_permissions": {
         "required": [
           "none"

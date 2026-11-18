@@ -246,7 +246,7 @@ fn fetched_xpi() -> PathBuf {
 /// Gets the signed add-on of this version from the official release page.
 async fn fetch_firefox_xpi(proxy: swiftget_engine::http::ProxyConfig) -> anyhow::Result<PathBuf> {
     let url = format!(
-        "https://github.com/m137418529630mmmm-glitch/MediaLab-Downloder/releases/download/v{}/{FIREFOX_XPI}",
+        "https://github.com/m137418529630mmmm-glitch/MediaLab-Downloder-gpt/releases/download/v{}/{FIREFOX_XPI}",
         env!("CARGO_PKG_VERSION")
     );
     let bytes = swiftget_engine::http::fetch_small(&proxy, &url).await?;

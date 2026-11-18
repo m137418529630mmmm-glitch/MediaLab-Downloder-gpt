@@ -1349,6 +1349,9 @@ function streamAttrs(metaList, m, familyMap, claimedIds) {
     ...(m.initSeg ? { initSeg: m.initSeg } : {}),
     ...(name ? { name } : {}),
     ...(metaId ? { metaId } : {}),
+    // seen = the mouse was on this video / it is the page's player (the previews of a grid that
+    // nobody stood on are not listed)
+    ...(mt ? { seen: !!mt.hover } : {}),
     ...(thumb ? { thumb } : {}),
   };
 }
@@ -2363,6 +2366,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         href: String(msg.href || ""),
         keys,
         scan: !!msg.scan,
+        hover: !!msg.hover,
         frames: [],
       };
       changeMetas(sender.tab.id, (list) => {
@@ -2377,6 +2381,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (keys.length) same.keys = [...new Set([...(same.keys || []), ...keys])].slice(0, 16);
           if (!msg.refresh && !msg.scan) same.t = entry.t;
           if (!msg.scan) same.scan = false;
+          if (entry.hover) same.hover = true; // the mouse came to it (or it is the page's own player)
           return;
         }
         list.push(entry);

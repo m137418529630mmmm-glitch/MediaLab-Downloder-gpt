@@ -17,6 +17,16 @@
       return false;
     }
   };
+  // Every message to the add-in's background goes this way: when the add-in is gone (updated, switched
+  // off, reloaded) `chrome.runtime` is not there any more and a plain call throws a TypeError.
+  const safeSend = (msg, cb) => {
+    try {
+      if (!alive()) return shutdown();
+      chrome.runtime.sendMessage(msg, cb);
+    } catch (e) {
+      if (/context invalidated|sendMessage|undefined|chrome\.runtime/i.test(String((e && e.message) || e))) shutdown();
+    }
+  };
   const timers = [];
   const every = (fn, ms) => {
     const t = setInterval(() => {
@@ -51,7 +61,7 @@
   // errors of a script whose add-in is gone are not reported
   const quiet = (e) => {
     const m = String((e && (e.message || (e.reason && e.reason.message))) || "");
-    if (/context invalidated|receiving end does not exist|message port closed/i.test(m)) {
+    if (!alive() || /context invalidated|receiving end does not exist|message port closed|reading 'sendMessage'/i.test(m)) {
       try {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -335,7 +345,7 @@
     if (page !== lastPage || (!TOP && !lastPage)) {
       if (!TOP && lastPage === "frame:" + page) return;
       lastPage = TOP ? page : "frame:" + page;
-      chrome.runtime.sendMessage({ type: "swiftget-video-seen", page, frame: !TOP, feed: TOP && !page && inFeed() }).catch?.(() => {});
+      safeSend({ type: "swiftget-video-seen", page, frame: !TOP, feed: TOP && !page && inFeed() }).catch?.(() => {});
     }
   }
 
@@ -404,14 +414,14 @@
       if (e.source !== window || !d || typeof d !== "object") return;
       if (Array.isArray(d.__medialabMetaList) && d.__medialabMetaList.length) {
         try {
-          chrome.runtime.sendMessage({ type: "swiftget-json-metas", list: d.__medialabMetaList }, () => void chrome.runtime.lastError);
+          safeSend({ type: "swiftget-json-metas", list: d.__medialabMetaList }, () => void chrome.runtime.lastError);
         } catch (_) {}
         return;
       }
       if (typeof d.__medialabStream !== "string") return;
       try {
         const meta = matchDomMetaForStream(d.__medialabStream);
-        chrome.runtime.sendMessage({ type: "swiftget-stream-seen", url: d.__medialabStream, meta }, () => void chrome.runtime.lastError);
+        safeSend({ type: "swiftget-stream-seen", url: d.__medialabStream, meta }, () => void chrome.runtime.lastError);
       } catch (_) {
         /* add-in reloading */
       }
@@ -1203,7 +1213,7 @@
         if (!m.title && !m.thumb) continue;
         count++;
         const id = `${FRAME_ID}-c${++metaSeq}`;
-        chrome.runtime.sendMessage({ type: "swiftget-hover-meta", id, t: Date.now(), scan: true, ...m }, () => void chrome.runtime.lastError);
+        safeSend({ type: "swiftget-hover-meta", id, t: Date.now(), scan: true, ...m }, () => void chrome.runtime.lastError);
       }
     } catch (_) {}
   }
@@ -1244,7 +1254,7 @@
       // (also when a card's image is not a picture the page lets us read: its first frame is the picture)
       frames.push(f);
       try {
-        chrome.runtime.sendMessage({ type: "swiftget-hover-frames", id, frames }, () => void chrome.runtime.lastError);
+        safeSend({ type: "swiftget-hover-frames", id, frames }, () => void chrome.runtime.lastError);
       } catch (_) {
         clearInterval(timer);
       }
@@ -1274,7 +1284,10 @@
     const box = cardBoxOf(v);
     if (box) cards.add(box);
     try {
-      chrome.runtime.sendMessage({ type: "swiftget-hover-meta", id, t: Date.now(), refresh: !!knownId, ...metaOf(box || v) }, () => void chrome.runtime.lastError);
+      // the page's own big player counts as a video that is looked at; the previews of a grid only
+      // when the mouse comes to them (tellMeta)
+      const own = !box && (r.width >= innerWidth * 0.4 || r.height >= innerHeight * 0.45);
+      safeSend({ type: "swiftget-hover-meta", id, t: Date.now(), refresh: !!knownId, hover: own, ...metaOf(box || v) }, () => void chrome.runtime.lastError);
     } catch (_) {
       return; /* add-in reloading */
     }
@@ -1291,7 +1304,7 @@
     const id = `${FRAME_ID}-${++metaSeq}`;
     b.metaId = id;
     try {
-      chrome.runtime.sendMessage({ type: "swiftget-hover-meta", id, t: Date.now(), ...metaOf(b.video) }, () => void chrome.runtime.lastError);
+      safeSend({ type: "swiftget-hover-meta", id, t: Date.now(), hover: true, ...metaOf(b.video) }, () => void chrome.runtime.lastError);
     } catch (_) {
       return; /* add-in reloading */
     }
@@ -1367,9 +1380,10 @@
     b.open = false;
     b.help = false;
     b.asked = "";
+    b.lastOkAt = 0;
     b.host.style.display = "none";
     try {
-      chrome.runtime.sendMessage({ type: "swiftget-forget-video", link, page: TOP ? location.href : "" }, () => void chrome.runtime.lastError);
+      safeSend({ type: "swiftget-forget-video", link, page: TOP ? location.href : "" }, () => void chrome.runtime.lastError);
     } catch (_) {
       /* add-in reloading */
     }
@@ -1387,7 +1401,7 @@
     items = [];
     lastPage = "";
     try {
-      chrome.runtime.sendMessage({ type: "swiftget-media-request" }, (res) => !chrome.runtime.lastError && update(res));
+      safeSend({ type: "swiftget-media-request" }, (res) => !chrome.runtime.lastError && update(res));
     } catch (_) {
       /* add-in reloading */
     }
@@ -1489,7 +1503,7 @@
     const asked = videoKey(b.video);
     b.asked = asked;
     renderOne(b, quiet ? undefined : "Looking for the video qualities…");
-    chrome.runtime.sendMessage(
+    safeSend(
       // its own post / video link, or its own file; the page only when
       // neither is there
       {
@@ -1558,7 +1572,7 @@
         let tries = 0;
         const wait = setInterval(() => {
           tries++;
-          chrome.runtime.sendMessage({ type: "swiftget-status" }, (res) => {
+          safeSend({ type: "swiftget-status" }, (res) => {
             if (chrome.runtime.lastError) return;
             if (res && res.ok) {
               clearInterval(wait);
@@ -1619,7 +1633,7 @@
   }
 
   function sendPlaylist(b) {
-    chrome.runtime.sendMessage({ type: "swiftget-playlist", url: location.href }, (res) => {
+    safeSend({ type: "swiftget-playlist", url: location.href }, (res) => {
       if (chrome.runtime.lastError || !res || !res.ok) return notRunning(b, () => sendPlaylist(b));
       flashOne(b, "The playlist is open in MediaLab Downloader ✔", false);
     });
@@ -1880,7 +1894,7 @@
     const clip = { start: c.from, end: dur ? Math.min(c.to, dur) : c.to, exact: !!c.exact };
     const fileName = `${cleanTitle()}.${m.ext || "mp4"}`;
     stopPart(b);
-    chrome.runtime.sendMessage(
+    safeSend(
       { type: "swiftget-download", item: m, title: document.title, fileName, referrer: location.href, clip, part: true },
       (res) => {
         if (chrome.runtime.lastError || !res || !res.ok) notRunning(b, () => downloadPart(b, m));
@@ -1962,8 +1976,14 @@
       r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth &&
       r.width >= minW && r.height >= minH && (connected(b.video) || b.ghost) &&
       !(fs && fs.tagName === "VIDEO") && (!fs || (b.video.nodeType === 1 && fs.contains(b.video)) || fs.shadowRoot);
+    const posOk = r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth;
+    const zeroRect = r.width === 0 && r.height === 0; // the page swaps the video element for a moment
+    if (!onScreen && !b.dismissed && (posOk || zeroRect) && b.lastOkAt && Date.now() - b.lastOkAt < 1500 && (connected(b.video) || b.ghost)) {
+      return; // a video that changes its size while it loads: the button stays where it was
+    }
     b.host.style.display = onScreen ? "block" : "none";
     if (!onScreen) return;
+    b.lastOkAt = Date.now();
     if (b.host.parentNode !== layer()) layer().appendChild(b.host);
     promote(b);
     // the size of the button itself (the user can make it smaller or bigger);
@@ -2109,7 +2129,9 @@
     const mv = mainVideo();
     const mvr = mv ? mv.getBoundingClientRect() : null;
     const big = !!mvr && (mvr.width >= innerWidth * 0.4 || mvr.height >= innerHeight * 0.45 || !TOP);
-    if (mv && big && mv !== hiddenTarget && targetAlive(mv) && (items.length || playing(mv))) return mv;
+    // (once the button is on the video it stays: a video that is loading is "not playing" for a moment)
+    const keepOn = !!(theBubble && theBubble.video === mv);
+    if (mv && big && mv !== hiddenTarget && targetAlive(mv) && (items.length || playing(mv) || keepOn)) return mv;
     if (!TOP) {
       // an embedded player: its own video
       let best = null;
@@ -2142,7 +2164,20 @@
     }
     const t = chooseTarget();
     if (!t) {
-      if (theBubble) theBubble.host.style.display = "none";
+      // nothing to be on for a moment (a hover preview that is replaced): it does not blink away
+      if (theBubble) {
+        const tb = theBubble;
+        let onNow = false;
+        try {
+          if (tb.lastOkAt && Date.now() - tb.lastOkAt < 1200 && !hiddenTarget && connected(tb.video)) {
+            const rr = rectOfTarget(tb.video);
+            onNow = (rr.width === 0 && rr.height === 0) || (rr.bottom > 0 && rr.top < innerHeight && rr.right > 0 && rr.left < innerWidth); // (scrolled away: not a blip)
+          }
+        } catch (_) {
+          onNow = false;
+        }
+        if (!onNow) tb.host.style.display = "none";
+      }
       return;
     }
     let b = theBubble;
@@ -2189,7 +2224,7 @@
     // a stream whose qualities are not known yet: ask the app for them
     if (m.resolve) return lookUp(b, m.resolve);
     const fileName = `${cleanTitle()}.${m.ext || "mp4"}`;
-    chrome.runtime.sendMessage(
+    safeSend(
       { type: "swiftget-download", item: m, title: document.title, fileName, referrer: location.href },
       (res) => {
         if (chrome.runtime.lastError || !res || !res.ok) notRunning(b, () => download(b, m));
@@ -2217,7 +2252,7 @@
     ).test(String(text).toLowerCase());
   let linkRules = null;
   const refreshLinkRules = () =>
-    chrome.runtime.sendMessage({ type: "swiftget-link-rules" }, (res) => {
+    safeSend({ type: "swiftget-link-rules" }, (res) => {
       linkRules = chrome.runtime.lastError ? null : res || null;
     });
   refreshLinkRules();
@@ -2269,7 +2304,7 @@
       const href = String(a.href);
       if (!wantedLink(e, href)) return;
       e.preventDefault();
-      chrome.runtime.sendMessage({ type: "swiftget-link", url: href }, (res) => {
+      safeSend({ type: "swiftget-link", url: href }, (res) => {
         // not taken (the app is closed, the user chose the browser): the browser's way
         if (chrome.runtime.lastError || !res || !res.ok) {
           const tmp = document.createElement("a");
@@ -2295,7 +2330,7 @@
       if (!/^magnet:\?/i.test(href) || !/xt=urn:bt[im]h:/i.test(href)) return;
       e.preventDefault();
       e.stopPropagation();
-      chrome.runtime.sendMessage({ type: "swiftget-magnet", url: href }, (res) => {
+      safeSend({ type: "swiftget-magnet", url: href }, (res) => {
         // not taken (the app is closed, or sending is off): the browser's way
         if (chrome.runtime.lastError || !res || !res.ok) location.href = href;
       });
@@ -2414,7 +2449,7 @@
     if (msg.type === "swiftget-reset") resetAll();
     return false;
   });
-  chrome.runtime.sendMessage({ type: "swiftget-config" }, (res) => {
+  safeSend({ type: "swiftget-config" }, (res) => {
     if (!chrome.runtime.lastError && res) {
       panel = res;
       if (!panelAllowed()) {
@@ -2428,12 +2463,12 @@
     addEventListener(
       "mousedown",
       (e) => {
-        chrome.runtime.sendMessage({ type: "swiftget-keys", alt: e.altKey, ctrl: e.ctrlKey, shift: e.shiftKey }).catch?.(() => {});
+        safeSend({ type: "swiftget-keys", alt: e.altKey, ctrl: e.ctrlKey, shift: e.shiftKey }).catch?.(() => {});
       },
       true
     );
     // media detected before this script loaded
-    chrome.runtime.sendMessage({ type: "swiftget-media-request" }, (res) => {
+    safeSend({ type: "swiftget-media-request" }, (res) => {
       if (!chrome.runtime.lastError) update(res);
     });
   }

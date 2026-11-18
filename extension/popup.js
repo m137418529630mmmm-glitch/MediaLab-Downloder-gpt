@@ -932,6 +932,12 @@ function groupMedia(real, tab, pageName, pics = new Map()) {
     g.opts.push(m);
     videoGroups.set(key, g);
   }
+  // a page with many videos (a grid whose previews play by themselves): only the ones the mouse
+  // stood on, and the page's own player, are listed; with no such mark (a page of one video) all are
+  for (const [k, g] of [...videoGroups]) {
+    if (g.yt) continue;
+    if (g.opts.every((o) => o.seen === false)) videoGroups.delete(k);
+  }
   const groups = [...videoGroups.values()];
   // "other qualities of this stream" only when nothing better is there
   const hasReal = groups.some((g) => !g.audio && g.opts.some((o) => !o.resolve));
