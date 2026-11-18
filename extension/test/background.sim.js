@@ -49,7 +49,7 @@ const fetch = async (url, opts = {}) => {
   }
   return { ok: true, status: 200 };
 };
-const ctx = { chrome, fetch, AbortController, TextEncoder, TextDecoder, URLSearchParams, btoa, crypto: globalThis.crypto, setTimeout, clearTimeout, navigator: { userAgent: "TestUA" }, console, URL,
+const ctx = { chrome, fetch, AbortController, TextEncoder, TextDecoder, URLSearchParams, btoa, crypto: globalThis.crypto || require("crypto").webcrypto, setTimeout, clearTimeout, navigator: { userAgent: "TestUA" }, console, URL,
   importScripts: (...f) => f.forEach((x) => vm.runInContext(fs.readFileSync(path.join(dir, x), "utf8"), ctx)) };
 vm.createContext(ctx);
 vm.runInContext(fs.readFileSync(path.join(dir, "background.js"), "utf8"), ctx);

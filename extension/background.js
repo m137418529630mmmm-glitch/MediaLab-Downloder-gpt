@@ -405,6 +405,7 @@ async function reinjectIntoOpenTabs() {
   }
   for (const t of tabs) {
     if (t.id == null || t.discarded || t.status === "unloaded") continue;
+    if (!t.url || !/^https?:\/\//i.test(t.url) || /^https?:\/\/(chrome\.google\.com\/webstore|chromewebstore\.google\.com|addons\.mozilla\.org)/i.test(t.url)) continue;
     const target = { tabId: t.id, allFrames: true };
     try {
       await chrome.scripting.executeScript({ target, files: ["hook.js"], world: "MAIN" });
@@ -1283,9 +1284,17 @@ function changeMetas(tabId, fn) {
   return metaQueue;
 }
 const STREAM_TOKEN_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\b[0-9a-f]{20,64}\b/gi;
+const NUM_ID_RE = /(?:^|[^0-9])(\d{5,12})(?=[^0-9]|$)/g;
 function tokensOfUrl(url) {
   const out = [];
-  for (const m of String(url || "").matchAll(STREAM_TOKEN_RE)) out.push(m[0].toLowerCase());
+  const raw = String(url || "");
+  for (const m of raw.matchAll(STREAM_TOKEN_RE)) out.push(m[0].toLowerCase());
+  try {
+    const path = /^https?:/i.test(raw) ? new URL(raw).pathname : raw;
+    for (const m of path.matchAll(NUM_ID_RE)) {
+      if (!out.includes(m[1])) out.push(m[1]);
+    }
+  } catch {}
   return out;
 }
 function metaFor(list, t, claimed = null) {
@@ -1359,10 +1368,14 @@ function streamAttrs(metaList, m, familyMap, claimedIds) {
 function streamFamily(url) {
   try {
     const u = new URL(url);
-    // an id of the video in the address (a uuid, a long hex / number): all its streams are one video
+    // an id of the video in the address (a uuid, a long hex / numeric asset id): all its streams are one video
     const id = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{20,}/i.exec(u.pathname);
     if (id) return u.host + "/" + id[0].toLowerCase();
-    return u.host + u.pathname.split("/").slice(0, 5).join("/");
+    const numId = /(?:^|[^0-9])(\d{5,12})(?=[^0-9]|$)/.exec(u.pathname);
+    if (numId) return u.host + "/id-" + numId[1];
+    // distinct files in the same CDN directory (e.g. preview-foo.mp4 vs preview-bar.mp4) stay separate
+    const cleanPath = u.pathname.replace(/(?:[_-](?:1080|720|540|480|360|240|4k|hd|sd|low|high|med)p?)+(?=\.[a-z0-9]{2,5}$)/i, "");
+    return u.host + cleanPath;
   } catch {
     return url;
   }
@@ -1509,19 +1522,21 @@ function qualityOf(url) {
 }
 
 async function pushToTab(tabId) {
-  const { enabled } = await getOpts();
-  if (!enabled) {
-    // switched off: no buttons on the page, "off" on the add-in's icon
-    chrome.action.setBadgeBackgroundColor({ color: "#8a94a3" });
-    chrome.action.setBadgeText({ tabId, text: "off" }).catch(() => {});
-    chrome.tabs.sendMessage(tabId, { type: "swiftget-media", items: [] }).catch(() => {});
-    return;
-  }
-  const items = await itemsForTab(tabId);
-  const count = items.filter((i) => !i.disabled).length;
-  chrome.action.setBadgeBackgroundColor({ color: "#1f6feb" });
-  chrome.action.setBadgeText({ tabId, text: count ? String(count) : "" }).catch(() => {});
-  chrome.tabs.sendMessage(tabId, { type: "swiftget-media", items }).catch(() => {});
+  try {
+    const { enabled } = await getOpts();
+    if (!enabled) {
+      // switched off: no buttons on the page, "off" on the add-in's icon
+      Promise.resolve(chrome.action.setBadgeBackgroundColor({ color: "#8a94a3" })).catch(() => {});
+      Promise.resolve(chrome.action.setBadgeText({ tabId, text: "off" })).catch(() => {});
+      Promise.resolve(chrome.tabs.sendMessage(tabId, { type: "swiftget-media", items: [] })).catch(() => {});
+      return;
+    }
+    const items = await itemsForTab(tabId);
+    const count = items.filter((i) => !i.disabled).length;
+    Promise.resolve(chrome.action.setBadgeBackgroundColor({ color: "#E95432" })).catch(() => {});
+    Promise.resolve(chrome.action.setBadgeText({ tabId, text: count ? String(count) : "" })).catch(() => {});
+    Promise.resolve(chrome.tabs.sendMessage(tabId, { type: "swiftget-media", items })).catch(() => {});
+  } catch {}
 }
 
 // keepFresh: a page that changes without a reload (Artlist, YouTube...) already asks for its new
@@ -1556,7 +1571,10 @@ function headerMap(list) {
 
 // the on / off switch, kept at hand: nothing is caught while it is off
 let enabledNow = true;
-chrome.storage.local.get({ enabled: true }, (o) => (enabledNow = !o || o.enabled !== false));
+chrome.storage.local.get({ enabled: true }, (o) => {
+  if (chrome.runtime && chrome.runtime.lastError) return;
+  enabledNow = !o || o.enabled !== false;
+});
 chrome.storage.onChanged.addListener((ch, area) => {
   if (area === "local" && ch.enabled) enabledNow = ch.enabled.newValue !== false;
 });
@@ -1754,7 +1772,7 @@ chrome.webRequest.onHeadersReceived.addListener(
     const isMedia = MEDIA_TYPE.test(type) && !type.includes("mp2t"); // skip HLS chunks
     if (!isHls && !isDash && !isMedia) return;
     if (isDash) {
-      addMedia(d.tabId, { url, type: "DASH stream", size: 0, ext: "mp4", dash: true });
+      addMedia(d.tabId, { url, type: "DASH stream", size: 0, ext: "mp4", dash: true }).catch(() => {});
       return;
     }
     // byte-range pieces of a bigger stream can't be saved as a file
@@ -1764,17 +1782,15 @@ chrome.webRequest.onHeadersReceived.addListener(
     const cr = /\/(\d+)\s*$/.exec(h["content-range"] || "");
     if (cr) size = Number(cr[1]);
     else if (h["content-length"]) size = Number(h["content-length"]);
-    // tiny clips and ads are left out; a sound can be small (a sound effect)
-    // (a preview clip of a thumbnail is small: it counts while the mouse is on a card)
-    const nearHover = Date.now() - (lastHoverAt.get(d.tabId) || 0) < 8000;
-    if (isMedia && size > 0 && size < (/^audio\//i.test(type) ? 24 : nearHover ? 40 : 300) * 1024) return;
+    // tiny tracking beacons are left out, while stock preview clips and SFX are kept
+    if (isMedia && size > 0 && size < (/^audio\//i.test(type) ? 16 : 40) * 1024) return;
 
     addMedia(d.tabId, {
       url,
       type: isHls ? "HLS stream" : type.split(";")[0],
       size,
       ext: isHls ? "ts" : (type.split("/")[1] || "mp4").split(";")[0].replace("x-matroska", "mkv").replace("mpeg", "mp3"),
-    });
+    }).catch(() => {});
   },
   { urls: ["<all_urls>"] },
   ["responseHeaders"]
@@ -1823,7 +1839,7 @@ chrome.webRequest.onBeforeRequest.addListener(
     if (!seen) seenStreams.set(d.tabId, (seen = new Set()));
     if (seen.has(sk)) return;
     seen.add(sk);
-    addYoutubeStream(d.tabId, stream);
+    addYoutubeStream(d.tabId, stream).catch(() => {});
   },
   { urls: ["*://*.googlevideo.com/videoplayback*"] }
 );
@@ -2180,48 +2196,54 @@ async function resolveOneVideoRaw(msg, tab) {
 // ---------------------------------------------------------------- tab lifecycle
 
 chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
-  if (!info.url) return;
-  const ytKey = `yt_${tabId}`;
-  const { [ytKey]: yt } = await chrome.storage.session.get(ytKey);
-  const newId = videoIdOf(info.url);
-  if (yt && newId && yt.videoId === newId) return; // same video (e.g. timestamp change)
-  seenStreams.delete(tabId);
-  const resKey = `res_${tabId}`;
-  const { [resKey]: res } = await chrome.storage.session.get(resKey);
-  if (info.status === "loading" || yt || res) await clearTab(tabId, true);
-  if (newId && isYoutube(info.url)) resolveYoutube(tabId, info.url);
+  try {
+    if (!info.url) return;
+    const ytKey = `yt_${tabId}`;
+    const { [ytKey]: yt } = await chrome.storage.session.get(ytKey);
+    const newId = videoIdOf(info.url);
+    if (yt && newId && yt.videoId === newId) return; // same video (e.g. timestamp change)
+    seenStreams.delete(tabId);
+    const resKey = `res_${tabId}`;
+    const { [resKey]: res } = await chrome.storage.session.get(resKey);
+    if (info.status === "loading" || yt || res) await clearTab(tabId, true);
+    if (newId && isYoutube(info.url)) resolveYoutube(tabId, info.url).catch(() => {});
+  } catch {}
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
   seenStreams.delete(tabId);
-  chrome.storage.session.remove([`media_${tabId}`, `yt_${tabId}`, `res_${tabId}`, metaKey(tabId)]);
+  Promise.resolve(chrome.storage.session.remove([`media_${tabId}`, `yt_${tabId}`, `res_${tabId}`, metaKey(tabId)])).catch(() => {});
 });
 
 // ---------------------------------------------------------------- 4. context menu
 
 function makeMenus() {
-  chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({ id: "swiftget-link", title: "Download with MediaLab Downloader", contexts: ["link"] });
-    chrome.contextMenus.create({
-      id: "swiftget-media",
-      title: "Download this media with MediaLab Downloader",
-      contexts: ["video", "audio", "image"],
+  const quietErr = () => void (chrome.runtime && chrome.runtime.lastError);
+  try {
+    chrome.contextMenus.removeAll(() => {
+      quietErr();
+      chrome.contextMenus.create({ id: "swiftget-link", title: "Download with MediaLab Downloader", contexts: ["link"] }, quietErr);
+      chrome.contextMenus.create({
+        id: "swiftget-media",
+        title: "Download this media with MediaLab Downloader",
+        contexts: ["video", "audio", "image"],
+      }, quietErr);
+      chrome.contextMenus.create({
+        id: "swiftget-video",
+        title: "Download video with MediaLab Downloader",
+        contexts: ["page", "video", "frame"],
+      }, quietErr);
+      chrome.contextMenus.create({
+        id: "swiftget-all",
+        title: "Download all links with MediaLab Downloader",
+        contexts: ["page", "frame", "link", "image"],
+      }, quietErr);
+      chrome.contextMenus.create({
+        id: "swiftget-selected",
+        title: "Download selected links with MediaLab Downloader",
+        contexts: ["selection"],
+      }, quietErr);
     });
-    chrome.contextMenus.create({
-      id: "swiftget-video",
-      title: "Download video with MediaLab Downloader",
-      contexts: ["page", "video", "frame"],
-    });
-    chrome.contextMenus.create({
-      id: "swiftget-all",
-      title: "Download all links with MediaLab Downloader",
-      contexts: ["page", "frame", "link", "image"],
-    });
-    chrome.contextMenus.create({
-      id: "swiftget-selected",
-      title: "Download selected links with MediaLab Downloader",
-      contexts: ["selection"],
-    });
-  });
+  } catch {}
 }
 chrome.runtime.onInstalled.addListener(makeMenus);
 chrome.runtime.onStartup.addListener(makeMenus);
@@ -2296,7 +2318,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       );
     }
     case "swiftget-get-media":
-      itemsForTab(msg.tabId).then(sendResponse);
+      itemsForTab(msg.tabId).then(sendResponse).catch(() => sendResponse([]));
       return true;
     case "swiftget-get-pics": {
       // the small pictures of the videos the popup shows (asked once, not with every refresh)
@@ -2475,25 +2497,58 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       ).catch(() => {});
       return false;
     }
+    case "swiftget-direct-media": {
+      const u = String(msg.url || "");
+      if (!sender.tab || !/^https?:/i.test(u) || isTelegramStream(u) || /googlevideo\.com/i.test(u)) return false;
+      const extMatch = /\.([a-z0-9]{2,4})(\?|#|$)/i.exec(u);
+      const ext = extMatch ? extMatch[1].toLowerCase() : "mp4";
+      const isAud = /^(mp3|wav|m4a|ogg|aac|flac)$/i.test(ext);
+      let meta = null;
+      if (msg.meta && typeof msg.meta === "object" && (msg.meta.title || msg.meta.thumb)) {
+        const id = `dm-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+        const keys = [...new Set([...(Array.isArray(msg.meta.keys) ? msg.meta.keys : []), ...tokensOfUrl(u)])].slice(0, 12);
+        meta = { id, t: Date.now(), title: String(msg.meta.title || ""), thumb: String(msg.meta.thumb || ""), href: String(msg.meta.href || ""), keys, hover: !!msg.meta.hover, frames: [] };
+        changeMetas(sender.tab.id, (list) => {
+          const same = keys.length && list.find((x) => x.keys && x.keys.some((k) => keys.includes(k)));
+          if (same) {
+            if (!same.title && meta.title) same.title = meta.title;
+            if (!same.thumb && meta.thumb) same.thumb = meta.thumb;
+            if (meta.hover) same.hover = true;
+            meta.id = same.id;
+          } else {
+            list.push(meta);
+            while (list.length > 50) list.shift();
+          }
+        });
+      }
+      addMedia(sender.tab.id, {
+        url: u,
+        type: isAud ? `audio/${ext === "mp3" ? "mpeg" : ext}` : `video/${ext}`,
+        size: 0,
+        ext,
+        ...(meta ? { meta } : {}),
+      }).catch(() => {});
+      return false;
+    }
     case "swiftget-media-request":
       if (!sender.tab) return false;
-      if (sender.tab.url && videoIdOf(sender.tab.url)) resolveYoutube(sender.tab.id, sender.tab.url);
-      itemsForTab(sender.tab.id).then(sendResponse);
+      if (sender.tab.url && videoIdOf(sender.tab.url)) resolveYoutube(sender.tab.id, sender.tab.url).catch(() => {});
+      itemsForTab(sender.tab.id).then(sendResponse).catch(() => sendResponse([]));
       return true;
     case "swiftget-video-seen":
       // the page shows a video: find its qualities
       if (!sender.tab) return false;
       getOpts().then((o) => {
         if (!o.enabled) return;
-        if (isYoutube(sender.tab.url)) resolveYoutube(sender.tab.id, sender.tab.url);
+        if (isYoutube(sender.tab.url)) resolveYoutube(sender.tab.id, sender.tab.url).catch(() => {});
         // a Facebook feed: its address is no video (the video's own post
         // link is looked up when its button is clicked)
-        else if (!msg.feed) resolvePage(sender.tab.id, msg.page || sender.tab.url, !!msg.frame);
-      });
+        else if (!msg.feed) resolvePage(sender.tab.id, msg.page || sender.tab.url, !!msg.frame).catch(() => {});
+      }).catch(() => {});
       return false;
     case "swiftget-resolve-video":
       // one of several videos on the page: its own file, or its own link
-      resolveOneVideo(msg, sender.tab).then(sendResponse);
+      resolveOneVideo(msg, sender.tab).then(sendResponse).catch((e) => sendResponse({ error: String((e && e.message) || e) }));
       return true;
     case "swiftget-link-rules":
       // what a click on a file link in the page should do (decided in the
@@ -2507,7 +2562,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           skipKey: cfg.skipKey || "none",
           forceKey: cfg.forceKey || "none",
         });
-      });
+      }).catch(() => sendResponse(null));
       return true;
     case "swiftget-link":
       // a file link clicked in a page: straight to the app
@@ -2547,7 +2602,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       })();
       return true;
     case "swiftget-reconnect":
-      reconnect().then((ok) => sendResponse({ ok }));
+      reconnect().then((ok) => sendResponse({ ok })).catch(() => sendResponse({ ok: false }));
       return true;
     case "swiftget-keys":
       lastKeys = { alt: !!msg.alt, ctrl: !!msg.ctrl, shift: !!msg.shift, at: Date.now() };
@@ -2556,7 +2611,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       Promise.all([getConfig(), getOpts()]).then(([cfg, o]) => {
         const panel = (cfg && cfg.panel) || { enabled: true, skipSites: [] };
         sendResponse(o.enabled ? panel : { ...panel, enabled: false });
-      });
+      }).catch(() => sendResponse({ enabled: true, skipSites: [] }));
       return true;
     default:
       return false;

@@ -162,7 +162,7 @@ pub async fn run(
     let next = Arc::new(AtomicUsize::new(0));
     let child = cancel.child_token();
     let mut set = JoinSet::new();
-    for _ in 0..job.connections.clamp(1, 16) {
+    for _ in 0..job.connections.clamp(1, 32) {
         let (shared, job, progress, child, next, parts, keys, chosen) = (
             shared.clone(),
             job.clone(),
@@ -205,7 +205,6 @@ pub async fn run(
                             use std::io::Write;
                             let mut f = std::fs::File::create(&tmp)?;
                             f.write_all(&data)?;
-                            f.sync_data()?;
                         }
                         std::fs::rename(&tmp, &path)?;
                         Ok::<u64, anyhow::Error>(data.len() as u64)

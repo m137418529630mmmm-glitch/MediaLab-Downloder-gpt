@@ -49,7 +49,7 @@ function load({ helper, firefox = false, granted = false }) {
     if (url.includes(":9614/ping") || url.includes(":47000/")) return { ok: true, status: 200, json: async () => ({ ok: true, via: "port" }) };
     throw new TypeError("Failed to fetch");
   };
-  const ctx = { chrome, fetch, AbortController, TextEncoder, crypto: globalThis.crypto, setTimeout, clearTimeout, console, URL,
+  const ctx = { chrome, fetch, AbortController, TextEncoder, crypto: globalThis.crypto || require("crypto").webcrypto, setTimeout, clearTimeout, console, URL,
     navigator: { userAgent: firefox ? "Mozilla/5.0 Firefox/150.0" : "Chrome/150" }, importScripts: (...f) => f.forEach((x) => vm.runInContext(fs.readFileSync(path.join(dir, x), "utf8"), ctx)) };
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(path.join(dir, "background.js"), "utf8"), ctx);

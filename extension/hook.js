@@ -5,15 +5,19 @@
   if (window.__medialabHook) return;
   window.__medialabHook = true;
   const re = /\.(m3u8|mpd)(\?|#|$)/i;
+  const directRe = /\.(mp4|webm|mov|m4v|mp3|wav|m4a|ogg|aac)(\?|#|$)/i;
   const told = new Map();
-  const tell = (u) => {
+  const tell = (u, allowDirect = false) => {
     try {
       const url = new URL(String(u), location.href).href;
-      if (!/^https?:/i.test(url) || !re.test(url)) return;
+      if (!/^https?:/i.test(url)) return;
+      const isStream = re.test(url);
+      const isDirect = allowDirect && directRe.test(url) && !/googlevideo\.com/i.test(url);
+      if (!isStream && !isDirect) return;
       const now = Date.now();
       if (told.has(url) && now - told.get(url) < 3000) return;
       told.set(url, now);
-      window.postMessage({ __medialabStream: url }, "*");
+      window.postMessage(isStream ? { __medialabStream: url } : { __medialabDirectMedia: url }, "*");
     } catch (_) {
       /* not an address */
     }
@@ -189,7 +193,7 @@
         ...d,
         set(v) {
           try {
-            tell(v);
+            tell(v, true);
           } catch (_) {
             /* ignore */
           }

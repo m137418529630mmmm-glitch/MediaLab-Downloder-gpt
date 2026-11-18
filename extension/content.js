@@ -424,6 +424,13 @@
         } catch (_) {}
         return;
       }
+      if (typeof d.__medialabDirectMedia === "string") {
+        try {
+          const meta = matchDomMetaForStream(d.__medialabDirectMedia);
+          safeSend({ type: "swiftget-direct-media", url: d.__medialabDirectMedia, meta }, () => void chrome.runtime.lastError);
+        } catch (_) {}
+        return;
+      }
       if (typeof d.__medialabStream !== "string") return;
       try {
         const meta = matchDomMetaForStream(d.__medialabStream);
@@ -614,21 +621,41 @@
     let media = null;
     for (const m of a.querySelectorAll("video, canvas, img, picture")) {
       const mr = m.getBoundingClientRect();
-      if (mr.width * mr.height >= r.width * r.height * 0.5) {
+      if (mr.width * mr.height >= r.width * r.height * 0.25 && mr.width >= 100 && mr.height >= 56) {
         media = m;
         break;
+      }
+    }
+    // overlay <a> sitting on top of a sibling <video>/<img> inside a card wrapper (MotionArray, etc.)
+    if (!media && a.parentElement && a.parentElement !== document.body) {
+      const pr = a.parentElement.getBoundingClientRect();
+      if (pr.width <= 900 && pr.height <= 700) {
+        for (const m of a.parentElement.querySelectorAll("video, canvas, img, picture")) {
+          const mr = m.getBoundingClientRect();
+          if (mr.width >= 100 && mr.height >= 56) {
+            media = m;
+            break;
+          }
+        }
       }
     }
     if (!media) return false;
     if (media.tagName === "VIDEO" || media.tagName === "CANVAS") return true;
     return VIDEOISH_PATH.test(u.pathname) || /video|clip|footage|play/i.test((a.getAttribute("aria-label") || "") + " " + (a.getAttribute("title") || ""));
   }
+  const sameTargetLink = (a, b) => {
+    if (!a || !b) return false;
+    const la = ownLink(a);
+    const lb = ownLink(b);
+    return !!(la && lb && la === lb);
+  };
   // what is under the mouse: a video, or a card that links to one
   function candidateFrom(e) {
     const path = e.composedPath ? e.composedPath() : [e.target];
     const roots = globalThis.__medialabRoots;
     let vid = null;
     let card = null;
+    let fallbackBox = null;
     for (const n of path) {
       if (!n || n === document || n === window) break;
       if (roots && roots.has(n)) return { own: true };
@@ -636,16 +663,51 @@
       if (!tag) continue;
       if (!vid && tag === "VIDEO") vid = n;
       else if (!card && tag === "A" && n.href && (isVideoPage(n.href) || (looksLikeVideoCard(n) && (genericCards.add(n), true)))) card = n;
+      else if (!fallbackBox && n.nodeType === 1 && n !== document.body && n !== document.documentElement && n.querySelector) {
+        const r = n.getBoundingClientRect ? n.getBoundingClientRect() : null;
+        if (r && r.width >= 140 && r.height >= 80 && r.width <= 760 && r.height <= 560) {
+          const innerV = n.querySelector("video");
+          if (innerV) fallbackBox = n;
+          else if (!card) {
+            const innerA = n.querySelector("a[href]");
+            if (innerA && (isVideoPage(innerA.href) || (looksLikeVideoCard(innerA) && (genericCards.add(innerA), true)))) {
+              card = innerA;
+            }
+          }
+        }
+      }
     }
     if (card) {
       const cr = cardRect(card);
       if (cr.width >= 120 && cr.height >= 66) {
+        // Keep the existing stable bubble target if it points to the exact same video
+        if (theBubble && connected(theBubble.video) && sameTargetLink(card, theBubble.video)) {
+          recentCard = { a: theBubble.video, t: Date.now() };
+          return { el: theBubble.video };
+        }
         recentCard = { a: card, t: Date.now() };
         return { el: card };
       }
     }
     if (vid) {
       const r = vid.getBoundingClientRect();
+      // If YouTube / a site floats an inline hover preview over the active card, stay locked on the card!
+      if (theBubble && connected(theBubble.video) && !isMain(vid)) {
+        const br = rectOfTarget(theBubble.video);
+        if (
+          sameTargetLink(vid, theBubble.video) ||
+          (isCard(theBubble.video) && br.width >= 120 && br.height >= 66 && inRect(br, r.left + r.width / 2, r.top + r.height / 2, 45))
+        ) {
+          recentCard = { a: theBubble.video, t: Date.now() };
+          return { el: theBubble.video };
+        }
+      }
+      if (recentCard && Date.now() - recentCard.t < 15000 && recentCard.a.isConnected && !isMain(vid)) {
+        if (inRect(cardRect(recentCard.a), r.left + r.width / 2, r.top + r.height / 2, 45)) {
+          recentCard.t = Date.now();
+          return { el: recentCard.a };
+        }
+      }
       // a preview that plays inside a thumbnail's frame: the frame is the target (steady)
       const box = r.width >= 100 && r.height >= 56 ? cardBoxOf(vid) : null;
       if (box) {
@@ -654,12 +716,13 @@
         return { el: box };
       }
       if (r.width >= 200 && r.height >= 100) {
-        // a hover preview floats over its card: the card's own link is the right one
-        if (recentCard && Date.now() - recentCard.t < 2500 && recentCard.a.isConnected && !isMain(vid)) {
-          if (inRect(cardRect(recentCard.a), r.left + r.width / 2, r.top + r.height / 2, 30)) return { el: recentCard.a };
-        }
         return { el: vid };
       }
+    }
+    if (fallbackBox) {
+      cards.add(fallbackBox);
+      recentCard = { a: fallbackBox, t: Date.now() };
+      return { el: fallbackBox };
     }
     return { el: null };
   }
@@ -1233,7 +1296,7 @@
       if (!document.querySelectorAll) return;
       const seenBoxes = new Set();
       const cardEls = document.querySelectorAll(
-        "a[href*='/clip/' i], a[href*='/video/' i], a[href*='/footage/' i], a[href*='/watch' i], a[href*='/shorts/' i], a[href*='/reel/' i], article, figure, [class*='card' i], [class*='tile' i]"
+        "a[href*='/stock-video/' i], a[href*='/stock-footage/' i], a[href*='/video-templates/' i], a[href*='/clip/' i], a[href*='/video/' i], a[href*='/footage/' i], a[href*='/watch' i], a[href*='/shorts/' i], a[href*='/reel/' i], article, figure, [class*='card' i], [class*='tile' i]"
       );
       let count = 0;
       for (const el of cardEls) {
@@ -1321,7 +1384,12 @@
       // the page's own big player counts as a video that is looked at; the previews of a grid only
       // when the mouse comes to them (tellMeta)
       const own = !box && (r.width >= innerWidth * 0.4 || r.height >= innerHeight * 0.45);
-      safeSend({ type: "swiftget-hover-meta", id, t: Date.now(), refresh: !!knownId, hover: own, ...metaOf(box || v) }, () => void chrome.runtime.lastError);
+      const mInfo = metaOf(box || v);
+      safeSend({ type: "swiftget-hover-meta", id, t: Date.now(), refresh: !!knownId, hover: own, ...mInfo }, () => void chrome.runtime.lastError);
+      const dsrc = directSrc(v);
+      if (dsrc) {
+        safeSend({ type: "swiftget-direct-media", url: dsrc, meta: { ...mInfo, hover: own } }, () => void chrome.runtime.lastError);
+      }
     } catch (_) {
       return; /* add-in reloading */
     }
@@ -1368,6 +1436,14 @@
 
   // the button goes to another video / card: what was found for the one before is not for this
   function retarget(b, t) {
+    if (sameTargetLink(b.video, t)) {
+      b.video = t;
+      b.ghost = false;
+      b.goneAt = 0;
+      watchTarget(b, t);
+      placeOne(b);
+      return;
+    }
     clearTimeout(b.prefetch);
     if (b.partWatch) stopPart(b);
     b.video = t;
@@ -1470,18 +1546,41 @@
   // What one video offers: the qualities of ONE video (the newest the page opened), each once,
   // best first. "Other qualities of this stream…" and a nameless "Video" are left out when real
   // qualities are there (they can lead to another video).
-  function shape(list) {
+  function extractUrlTokens(u) {
+    const out = [];
+    const s = String(u || "");
+    for (const m of s.matchAll(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\b[0-9a-f]{20,64}\b/gi)) {
+      out.push(m[0].toLowerCase());
+    }
+    try {
+      const p = /^https?:/i.test(s) ? new URL(s).pathname : s;
+      for (const m of p.matchAll(/(?:^|[^0-9])(\d{5,12})(?=[^0-9]|$)/g)) {
+        if (!out.includes(m[1])) out.push(m[1]);
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  function shape(list, pref = null) {
     const real = list.filter((i) => !i.disabled);
     const info = list.filter((i) => i.disabled);
     if (real.length < 2) return list;
     const isAudio = (i) => (i.yt ? i.yt.quality === "audio" || i.yt.quality === "mp3" : !!i.audio);
+    const prefSrc = pref && pref.src ? pref.src : "";
+    const prefTokens = (pref && pref.tokens) || [];
+    const prefMetaId = (pref && pref.metaId) || "";
     const groups = new Map();
     for (const i of real) {
-      const key = i.yt ? "yt" : i.resolve ? "resolve" : "s:" + (i.family || "");
-      const g = groups.get(key) || { opts: [], t: 0, audio: true, yt: !!i.yt };
+      const key = i.yt ? "yt" : i.resolve ? "resolve" : "s:" + (i.family || i.url || "");
+      const g = groups.get(key) || { opts: [], t: 0, audio: true, yt: !!i.yt, matchScore: 0, seen: false };
       g.opts.push(i);
       g.t = Math.max(g.t, i.t || 0);
       if (!isAudio(i)) g.audio = false;
+      if (i.seen) g.seen = true;
+      const u = String(i.url || i.sub || "");
+      if (prefSrc && u && (u === prefSrc || u.split("?")[0] === prefSrc.split("?")[0])) g.matchScore = Math.max(g.matchScore, 100);
+      if (prefTokens.length && u && prefTokens.some((tok) => u.toLowerCase().includes(tok))) g.matchScore = Math.max(g.matchScore, 60);
+      if (prefMetaId && i.metaId && i.metaId === prefMetaId) g.matchScore = Math.max(g.matchScore, 50);
       groups.set(key, g);
     }
     const all = [...groups.entries()];
@@ -1489,8 +1588,14 @@
     let pool = all.filter(([k]) => !(haveReal && k === "resolve"));
     const videoPool = pool.filter(([, g]) => !g.audio);
     if (videoPool.length) pool = videoPool;
-    // the YouTube group is the page's video; else the newest one
-    pool.sort((a, b) => (b[1].yt ? 1 : 0) - (a[1].yt ? 1 : 0) || b[1].t - a[1].t);
+    // Prioritize: YouTube resolved > direct src/ID/metaId match to active player > seen (main/hovered) > newest
+    pool.sort(
+      (a, b) =>
+        (b[1].yt ? 1 : 0) - (a[1].yt ? 1 : 0) ||
+        b[1].matchScore - a[1].matchScore ||
+        (b[1].seen ? 1 : 0) - (a[1].seen ? 1 : 0) ||
+        b[1].t - a[1].t
+    );
     const g = pool[0][1];
     const high = (i) => {
       const m = /(\d{3,4})p/i.exec((i.yt && i.yt.quality) || i.label || "");
@@ -1513,19 +1618,42 @@
       b.own = null;
       b.ownFor = "";
     }
-    if (b.own) return shape(b.own);
+    const vidEl = b.video && b.video.tagName === "VIDEO" ? b.video : b.video && b.video.querySelector ? b.video.querySelector("video") : null;
+    const dsrc = vidEl ? directSrc(vidEl) : "";
+    const pref = {
+      src: dsrc,
+      tokens: extractUrlTokens(ownLink(b.video) || (b.video && b.video.href) || location.href),
+      metaId: b.metaId || "",
+    };
+    if (b.own) return shape(b.own, pref);
     // the sound of the page: the sound files it opened
     if (isAudioTarget(b.video)) return audioItems();
-    // a card: what the page opened since the mouse came to it is this video (live, no look-up needed)
+    // a card: match its direct video src or streams opened since mouse entered
     if (isCard(b.video)) {
+      if (dsrc && !ownLink(b.video)) {
+        const hit = items.filter((i) => !i.disabled && i.url && (i.url === dsrc || i.url.split("?")[0] === dsrc.split("?")[0]));
+        if (hit.length) return shape(hit, pref);
+        const ext = (/\.([a-z0-9]{2,4})(\?|#|$)/i.exec(dsrc) || [])[1] || "mp4";
+        return [{ label: `Video · ${ext.toUpperCase()}`, sub: dsrc, url: dsrc, ext }];
+      }
       const fresh = items.filter((i) => !i.disabled && (i.t || 0) >= b.since - 1500);
-      return fresh.length ? shape(fresh) : [];
+      return fresh.length ? shape(fresh, pref) : [];
     }
     // the page's own video only: a player that shows another video (a
     // preview on a home page) is looked up for that video
     if (!isMain(b.video)) return [];
     const mine = ownLink(b.video);
-    return !mine || isVideoPage(location.href) || mine === cleanLink(location.href) ? shape(items) : [];
+    if (!mine || isVideoPage(location.href) || mine === cleanLink(location.href)) {
+      const shaped = shape(items, pref);
+      // If main player has a direct https MP4/WebM src and none of the captured items match it,
+      // prefer the main player's own direct src instead of a related-video preview!
+      if (dsrc && !shaped.some((i) => i.yt) && !shaped.some((i) => i.url && i.url.split("?")[0] === dsrc.split("?")[0])) {
+        const ext = (/\.([a-z0-9]{2,4})(\?|#|$)/i.exec(dsrc) || [])[1] || "mp4";
+        return [{ label: `Video · ${ext.toUpperCase()}`, sub: dsrc, url: dsrc, ext }];
+      }
+      return shaped;
+    }
+    return [];
   }
 
   function lookUp(b, stream, quiet) {
@@ -2012,7 +2140,7 @@
       !(fs && fs.tagName === "VIDEO") && (!fs || (b.video.nodeType === 1 && fs.contains(b.video)) || fs.shadowRoot);
     const posOk = r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth;
     const zeroRect = r.width === 0 && r.height === 0; // the page swaps the video element for a moment
-    if (!onScreen && !b.dismissed && (posOk || zeroRect) && b.lastOkAt && Date.now() - b.lastOkAt < 1500 && (connected(b.video) || b.ghost)) {
+    if (!onScreen && !b.dismissed && (posOk || zeroRect || b.loading || b.hovered || b.open) && b.lastOkAt && Date.now() - b.lastOkAt < 2500 && (connected(b.video) || b.ghost)) {
       return; // a video that changes its size while it loads: the button stays where it was
     }
     b.host.style.display = onScreen ? "block" : "none";
@@ -2106,16 +2234,18 @@
   // that was put there is the top one)
   function promote(b) {
     const now = Date.now();
-    if (now - (b.promotedAt || 0) < 400) return;
-    b.promotedAt = now;
     try {
       if (!b.host.matches(":popover-open")) {
+        b.promotedAt = now;
         b.host.showPopover();
         return;
       }
+      if (now - (b.promotedAt || 0) < 1500) return;
+      b.promotedAt = now;
       const rr = b.host.getBoundingClientRect();
+      if (rr.width < 4 || rr.height < 4) return;
       const top = document.elementFromPoint(rr.left + Math.min(8, rr.width / 2), rr.top + Math.min(8, rr.height / 2));
-      if (top && top !== b.host) {
+      if (top && top !== b.host && !b.host.contains(top)) {
         b.host.hidePopover();
         b.host.showPopover();
       }
@@ -2147,15 +2277,20 @@
     }
     if (cur && cur !== hiddenTarget) {
       if (targetAlive(cur)) return cur;
-      if (!connected(cur)) {
-        // a hover preview that ended under the mouse: its place is kept a moment
-        if (b && b.video === cur && b.lastRect) {
+      if (b && b.video === cur && b.lastRect) {
+        if (!connected(cur)) {
+          // a hover preview that ended under the mouse: its place is kept a moment
           if (!b.goneAt) b.goneAt = now;
           if (now - b.goneAt < 3000) {
             b.ghost = true;
             return cur;
           }
+          cur = null;
+        } else if (b.lastOkAt && now - b.lastOkAt < 2500) {
+          // momentarily 0x0 during DOM/preview transition (YouTube inline preview)
+          return cur;
         }
+      } else if (!connected(cur)) {
         cur = null;
       }
     }
