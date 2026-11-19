@@ -10,7 +10,7 @@
 use swiftget_engine::sync::LockOk;
 use crate::i18n::{t, tf};
 use crate::message;
-use crate::{open_window, Ctx, Ui};
+use crate::{open_window, Ctx, Ui, UpdateDialog};
 use slint::ComponentHandle;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -62,7 +62,8 @@ pub fn spawn(ui: &Ui) {
         return; // a portable copy: there is no installation to update
     }
     let mgr = ctx.mgr.clone();
-    let ui_startup = ui.clone();
+    let updater_weak = ui.updater.clone();
+    let ctx_bg = ui.ctx.clone();
     ctx.rt.spawn(async move {
         // first check right after the program opens: if an update is available, notify the user in the update window
         tokio::time::sleep(Duration::from_secs(3)).await;
@@ -72,9 +73,10 @@ pub fn spawn(ui: &Ui) {
                 let client = mgr.client();
                 if let Ok(Some(rel)) = selfupdate::check(&client).await {
                     if tries_of(&rel.version) < 2 {
-                        let ui_for_notify = ui_startup.clone();
+                        let u = updater_weak.clone();
+                        let c = ctx_bg.clone();
                         let _ = slint::invoke_from_event_loop(move || {
-                            check_now(&ui_for_notify);
+                            check_now_with(u, c);
                         });
                         return;
                     }
@@ -172,7 +174,11 @@ fn size_text(n: u64) -> String {
 /// Help > Check for updates: look now instead of waiting for the next check,
 /// in the update window.
 pub fn check_now(ui: &Ui) {
-    let Some(d) = ui.updater.upgrade() else { return };
+    check_now_with(ui.updater.clone(), ui.ctx.clone());
+}
+
+fn check_now_with(updater: slint::Weak<UpdateDialog>, ctx: Ctx) {
+    let Some(d) = updater.upgrade() else { return };
     open_window!(d);
     let set = |state: i32, heading: String, detail: String| {
         d.set_state(state);
@@ -218,8 +224,8 @@ pub fn check_now(ui: &Ui) {
         s.detail = crate::breakable(&detail);
         s.progress = progress;
     };
-    let client = ui.ctx.mgr.client();
-    ui.ctx.rt.spawn(async move {
+    let client = ctx.mgr.client();
+    ctx.rt.spawn(async move {
         let finish = |shared: &std::sync::Mutex<Shown>| {
             BUSY.store(false, Ordering::SeqCst);
             shared.lock_ok().done = true;
