@@ -10,6 +10,12 @@ use std::process::Command;
 /// folder wins, then one next to MediaLabDownloader.exe, then PATH.
 pub fn find_tool(name: &str) -> Option<PathBuf> {
     let exe_name = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
+    // yt-dlp: its folder build first (it starts much faster)
+    if name == "yt-dlp" {
+        if let Some(p) = crate::tools::ytdlp_folder_build() {
+            return Some(p);
+        }
+    }
     if let Some(p) = crate::tools::bundled(name) {
         return Some(p);
     }
@@ -110,12 +116,6 @@ pub fn run_watched(
     Ok(())
 }
 
-/// Times of an MP4 made without re-encoding, the way editors (Premiere, Resolve…) read it right:
-/// the first picture starts at 0 and there is no "edit list" that shifts the video by a few
-/// frames. (A stream with B-frames copied as it is gets such a shift, and an older Premiere shows
-/// that file as a black picture although every player plays it.)
-pub const NLE_SAFE_TIMES: [&str; 4] = ["-avoid_negative_ts", "make_zero", "-use_editlist", "0"];
-
 pub fn merge(
     video: &Path,
     audio: &Path,
@@ -135,9 +135,6 @@ pub fn merge(
         .arg("-i")
         .arg(audio)
         .args(["-map", "0:v:0", "-map", "1:a:0", "-c", "copy"]);
-    if format == "mp4" {
-        cmd.args(NLE_SAFE_TIMES);
-    }
     if format == "mp4" && expected < FASTSTART_UP_TO {
         // play while still loading, like normal web videos
         cmd.args(["-movflags", "+faststart"]);
@@ -163,8 +160,7 @@ pub fn ts_to_mp4(input: &Path, output: &Path, on: &dyn Fn(f64), cancel: Option<&
     let mut cmd = Command::new(&ffmpeg);
     cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "mpegts", "-i"])
         .arg(input)
-        .args(["-map", "0:v?", "-map", "0:a?", "-c", "copy"])
-        .args(NLE_SAFE_TIMES);
+        .args(["-map", "0:v?", "-map", "0:a?", "-c", "copy"]);
     if expected < FASTSTART_UP_TO {
         cmd.args(["-movflags", "+faststart"]);
     }

@@ -40,7 +40,8 @@ fn apply_as(setup: PathBuf, sha256: String, visible: bool) {
     }
 }
 
-pub fn spawn(ctx: &Ctx) {
+pub fn spawn(ui: &Ui) {
+    let ctx = &ui.ctx;
     // leftovers of an update that is installed now
     if let Ok(rd) = std::fs::read_dir(update_dir()) {
         for e in rd.flatten() {
@@ -61,13 +62,25 @@ pub fn spawn(ctx: &Ctx) {
         return; // a portable copy: there is no installation to update
     }
     let mgr = ctx.mgr.clone();
+    let ui_startup = ui.clone();
     ctx.rt.spawn(async move {
-        // first check as soon as the program is open
+        // first check right after the program opens: if an update is available, notify the user in the update window
         tokio::time::sleep(Duration::from_secs(3)).await;
         let mut first = true;
         loop {
-            if !BUSY.swap(true, Ordering::SeqCst) {
-                let started = round(&mgr, first).await;
+            if first {
+                let client = mgr.client();
+                if let Ok(Some(rel)) = selfupdate::check(&client).await {
+                    if tries_of(&rel.version) < 2 {
+                        let ui_for_notify = ui_startup.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            check_now(&ui_for_notify);
+                        });
+                        return;
+                    }
+                }
+            } else if !BUSY.swap(true, Ordering::SeqCst) {
+                let started = round(&mgr, false).await;
                 BUSY.store(false, Ordering::SeqCst);
                 if started {
                     return;

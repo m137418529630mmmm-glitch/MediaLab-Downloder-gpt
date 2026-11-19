@@ -1745,6 +1745,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "medialab-host"
+version = "1.0.17"
+dependencies = [
+ "ring",
+ "serde_json",
+ "windows-sys 0.59.0",
+ "winresource",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4150,15 +4160,6 @@ name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
-
-[[package]]
-name = "medialab-host"
-version = "1.0.16"
-dependencies = [
- "ring",
- "serde_json",
- "windows-sys 0.59.0",
-]
 
 [[package]]
 name = "memchr"
@@ -6618,7 +6619,7 @@ dependencies = [
 
 [[package]]
 name = "swiftget"
-version = "1.0.16"
+version = "1.0.17"
 dependencies = [
  "anyhow",
  "arboard",
@@ -6644,14 +6645,16 @@ dependencies = [
 
 [[package]]
 name = "swiftget-engine"
-version = "1.0.16"
+version = "1.0.17"
 dependencies = [
  "aes",
  "anyhow",
  "cbc",
  "chrono",
+ "crc32fast",
  "directories 5.0.1",
  "filetime",
+ "flate2",
  "librqbit",
  "librqbit-core",
  "librqbit-sha1-wrapper",
