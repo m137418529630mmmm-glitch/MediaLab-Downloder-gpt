@@ -175,6 +175,7 @@ jobs:
           data = {
               "version": version,
               "url": f"https://github.com/{repo}/releases/download/{tag}/MediaLab-Downloader-Setup.exe",
+              "size": setup.stat().st_size,
               "sha256": digest,
               "sig": signature
           }

@@ -51,6 +51,8 @@ pub struct Release {
     pub version: String,
     #[serde(default)]
     pub url: String,
+    #[serde(default)]
+    pub size: u64,
     pub sha256: String,
     /// Ed25519 signature of `signed_message(version, sha256)`, hex
     #[serde(default)]
@@ -216,7 +218,7 @@ pub async fn download_with_progress(
     let mut file = std::fs::File::create(&tmp)?;
     let mut h = Sha256::new();
     let mut total: u64 = 0;
-    let size = resp.content_length();
+    let size = resp.content_length().or_else(|| (r.size > 0).then_some(r.size));
     progress(0, size);
     while let Some(chunk) = resp.chunk().await? {
         total += chunk.len() as u64;

@@ -252,12 +252,21 @@ fn check_now_with(updater: slint::Weak<UpdateDialog>, ctx: Ctx) {
             return finish(&shared);
         }
         let heading = tf("Downloading version {}…", &[&rel.version]);
-        tell(&shared, 2, heading.clone(), String::new(), -1.0);
-        let (s2, h2) = (shared.clone(), heading.clone());
+        let ver_info = format!("{} → {}", selfupdate::current(), rel.version);
+        let init_detail = if rel.size > 0 {
+            format!("{ver_info}  •  {}", size_text(rel.size))
+        } else {
+            ver_info.clone()
+        };
+        tell(&shared, 2, heading.clone(), init_detail, -1.0);
+        let (s2, h2, vi) = (shared.clone(), heading.clone(), ver_info);
         let progress = move |done: u64, total: Option<u64>| {
             let (detail, p) = match total {
-                Some(t) if t > 0 => (format!("{} / {}", size_text(done), size_text(t)), done as f32 / t as f32),
-                _ => (size_text(done), -1.0),
+                Some(t) if t > 0 => {
+                    let pct = ((done as f64 / t as f64) * 100.0).round() as u32;
+                    (format!("{vi}  •  {} / {} ({pct}%)", size_text(done), size_text(t)), done as f32 / t as f32)
+                }
+                _ => (format!("{vi}  •  {}", size_text(done)), -1.0),
             };
             tell(&s2, 2, h2.clone(), detail, p);
         };

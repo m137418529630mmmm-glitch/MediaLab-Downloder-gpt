@@ -726,7 +726,7 @@ function browserRequest(...urls) {
   return null;
 }
 
-async function sendToApp({ url, audioUrl, referrer, fileName, headers, sourcePage, sourceKey, alsoUrl, clip, store, form }) {
+async function sendToApp({ url, audioUrl, referrer, fileName, headers, sourcePage, sourceKey, alsoUrl, clip, store, form, subs }) {
   const { port } = await getOpts();
   // the browser's own request for this file: its headers go along (the app
   // keeps its own Accept / Range); its cookie is the one the site really got
@@ -746,6 +746,7 @@ async function sendToApp({ url, audioUrl, referrer, fileName, headers, sourcePag
     userAgent: (sentUa && sentUa.value) || navigator.userAgent,
     fileName: fileName || null,
     clip: clip || null,
+    subs: subs || null,
     ...(form ? form : {}),
   };
   const r = await fetchWithTimeout(
@@ -1249,10 +1250,11 @@ async function readTab(tabId) {
 }
 
 function optionItems(resolved, source) {
+  const subtitles = resolved.subtitles || [];
   return resolved.options.map((o) => ({
     label: o.label,
     sub: o.sub,
-    yt: { ...o, title: resolved.title, source },
+    yt: { ...o, title: resolved.title, source, subtitles },
   }));
 }
 
@@ -1854,7 +1856,7 @@ function partOf(c) {
   return { start, end, exact: c.exact === true };
 }
 
-async function downloadVideo(option, pageTitle, pageUrl, clip, store) {
+async function downloadVideo(option, pageTitle, pageUrl, clip, store, subs) {
   const title = cleanYoutubeTitle(option.title || pageTitle);
   const name = option.quality === "mp3" ? `${title}.mp3` : `${title} [${option.quality}].${option.ext}`;
   await sendToApp({
@@ -1867,7 +1869,25 @@ async function downloadVideo(option, pageTitle, pageUrl, clip, store) {
     sourceKey: option.key,
     clip,
     store,
+    subs,
   });
+}
+
+async function sendSubtitles(page, langs, format, title) {
+  if (!/^https?:/i.test(page || "") || !Array.isArray(langs) || !langs.length) throw new Error("no subtitles were chosen");
+  const { port } = await getOpts();
+  const r = await fetchWithTimeout(
+    apiUrl(port, "/subtitles"),
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-SwiftGet": "1" },
+      body: JSON.stringify({ url: page, langs, format: format === "vtt" ? "vtt" : "srt", title: title || "" }),
+    },
+    125000
+  );
+  const data = await r.json();
+  if (!data.ok) throw new Error(data.error || "no subtitles");
+  return data;
 }
 
 const qualityHeight = (i) => {
@@ -2045,7 +2065,7 @@ async function askAppNow(page, referer, startApp = false) {
   );
   const data = await r.json();
   return data.ok
-    ? { resolved: { title: data.title, site: data.site, options: data.options } }
+    ? { resolved: { title: data.title, site: data.site, options: data.options, subtitles: data.subtitles || [] } }
     : { resolveError: data.error || "unknown error" };
 }
 
@@ -2311,12 +2331,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       return reply(
         storeOf(sender.tab).then((store) =>
           item.yt
-            ? downloadVideo(item.yt, msg.title, referrer, clip, store)
+            ? downloadVideo(item.yt, msg.title, referrer, clip, store, typeof msg.subs === "string" ? msg.subs.slice(0, 1000) : null)
             : sendToApp({ url: item.url, referrer, fileName: msg.fileName, clip, store })
         ),
         sendResponse
       );
     }
+    case "swiftget-subtitles":
+      sendSubtitles(msg.page, msg.langs, msg.format, msg.title)
+        .then((d) => sendResponse({ ok: true, count: d.count, note: d.note || "" }))
+        .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+      return true;
     case "swiftget-get-media":
       itemsForTab(msg.tabId).then(sendResponse).catch(() => sendResponse([]));
       return true;
