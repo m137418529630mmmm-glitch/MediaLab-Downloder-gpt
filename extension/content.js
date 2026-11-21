@@ -108,6 +108,23 @@
   };
   // the on / off switch of the add-in's window
   let switchedOn = true;
+  let extLang = "en";
+  const T = (en, ar) => (extLang === "ar" ? ar : en);
+  try {
+    chrome.storage.local.get({ extLang: "" }, (o) => {
+      if (chrome.runtime && chrome.runtime.lastError) return;
+      if (o && (o.extLang === "ar" || o.extLang === "en")) {
+        extLang = o.extLang;
+        bubbles.forEach((b) => renderOne(b));
+      }
+    });
+    chrome.storage.onChanged.addListener((ch) => {
+      if (ch.extLang && (ch.extLang.newValue === "ar" || ch.extLang.newValue === "en")) {
+        extLang = ch.extLang.newValue;
+        bubbles.forEach((b) => renderOne(b));
+      }
+    });
+  } catch (_) {}
   // the video button in full screen too (the add-in's window); off: hidden there
   let showInFullscreen = false;
   const panelAllowed = () =>
@@ -1829,7 +1846,7 @@
     const list = itemsOf(b);
     const usable = list.filter((i) => !i.disabled);
     const busy = b.loading || (!usable.length && list.some((i) => i.disabled && /Getting/.test(i.label)));
-    b.root.getElementById("label").textContent = usable.length > 1 && !b.loading ? `Download this video (${usable.length})` : "Download this video";
+    b.root.getElementById("label").textContent = usable.length > 1 && !b.loading ? `${T("Download this video", "تحميل الفيديو")} (${usable.length})` : T("Download this video", "تحميل الفيديو");
     b.root.getElementById("spin").hidden = !busy;
     b.root.querySelector("svg").style.display = busy ? "none" : "";
     b.root.getElementById("main").classList.toggle("open", b.open);
@@ -1891,9 +1908,9 @@
         });
         return t;
       };
-      const tabs = [tab("whole", "⬇ Whole video")];
-      if (subs.length) tabs.push(tab("with", "💬 With subtitles"), tab("subs", "📝 Subtitles"));
-      if (partOk) tabs.push(tab("part", "✂ Part"));
+      const tabs = [tab("whole", T("⬇ Whole video", "⬇ الفيديو كامل"))];
+      if (subs.length) tabs.push(tab("with", T("💬 With subtitles", "💬 مع الترجمة")), tab("subs", T("📝 Subtitles", "📝 الترجمات")));
+      if (partOk) tabs.push(tab("part", T("✂ Part", "✂ قص جزء")));
       box.appendChild(el("div", { class: "tabs" }, ...tabs));
     }
     if (mode === "subs") {
@@ -2525,7 +2542,7 @@
       { type: "swiftget-download", item: m, title: document.title, fileName, referrer: location.href, ...(subs ? { subs } : {}) },
       (res) => {
         if (chrome.runtime.lastError || !res || !res.ok) notRunning(b, () => download(b, m, subs));
-        else flashOne(b, "Sent to MediaLab Downloader ✔", false);
+        else flashOne(b, T("Sent to MediaLab Downloader ✔", "تم الإرسال إلى MediaLab Downloader ✔"), false);
       }
     );
   }

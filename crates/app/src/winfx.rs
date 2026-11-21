@@ -298,11 +298,17 @@ where
         let there = has_system_window(c.window());
         if there && (seen || tries == 0) {
             place_now(c.window(), maximizable);
-            // on the screen now: drawn whole (Windows kept nothing of what
-            // was drawn away from the screen; only changed parts were drawn
-            // again and the rest stayed white)
+            // on the screen now: drawn whole, plus a short follow-up repaint so
+            // Windows DWM never leaves the software backbuffer black
             repaint_all(&c);
             c.window().request_redraw();
+            let w2 = c.as_weak();
+            slint::Timer::single_shot(std::time::Duration::from_millis(120), move || {
+                if let Some(c2) = w2.upgrade() {
+                    repaint_all(&c2);
+                    c2.window().request_redraw();
+                }
+            });
             then();
         } else if there {
             wait_for_picture(weak, maximizable, then, tries + 1, true);
@@ -576,6 +582,16 @@ where
             | WindowEvent::ThemeChanged(_) => {
                 last.set(std::time::Instant::now());
                 all(&weak);
+                if let Some(c) = weak.upgrade() {
+                    c.window().request_redraw();
+                }
+                let w2 = weak.clone();
+                slint::Timer::single_shot(std::time::Duration::from_millis(80), move || {
+                    if let Some(c2) = w2.upgrade() {
+                        repaint_all(&c2);
+                        c2.window().request_redraw();
+                    }
+                });
             }
             // Windows asks for a picture (or we did): the whole window now
             // and then, so nothing stays black for long

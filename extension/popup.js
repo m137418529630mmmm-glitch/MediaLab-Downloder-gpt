@@ -1188,3 +1188,115 @@ function showMedia(tab, all, pics = new Map()) {
 }
 
 init();
+
+
+// ---- Bilingual EN / AR switcher (persisted in chrome.storage.local.extLang) ----
+(function initExtLang() {
+  if (typeof document === "undefined" || !document.getElementById) return;
+  const pill = document.getElementById("langPill");
+  if (!pill) return;
+  const AR = {
+    settingsSum: "الإعدادات",
+    btnSize: "حجم زر التحميل",
+    btnReset: "افتراضي",
+    btnStyle: "شكل الزر",
+    btnAlpha: "وضوح الزر",
+    fullscreen: "إظهار زر الفيديو في وضع ملء الشاشة أيضاً",
+    ytSum: "التحميل من يوتيوب",
+    ytLinkH3: "رابط الفيديو (يوتيوب)",
+    paste: "لصق",
+    qualityH3: "الجودة",
+    best: "الأفضل",
+    mediaSum: "الوسائط في هذه الصفحة",
+    startAgain: "↻ إعادة البحث",
+    onText: "إضافة MediaLab Downloader مفعّلة",
+    onHint: "التحميلات والفيديوهات في المتصفح تذهب إلى MediaLab Downloader",
+    offText: "إضافة MediaLab Downloader متوقفة",
+    offHint: "التحميلات تبقى في المتصفح",
+    tabVideo: "فيديو",
+    tabAudio: "صوت",
+    connected: "متصل",
+    disconnected: "غير متصل",
+  };
+  const EN = {
+    settingsSum: "Settings",
+    btnSize: "Download button size",
+    btnReset: "Reset",
+    btnStyle: "Button style",
+    btnAlpha: "Button see-through",
+    fullscreen: "Show the video button in full screen too",
+    ytSum: "Download from YouTube",
+    ytLinkH3: "Video link (YouTube)",
+    paste: "Paste",
+    qualityH3: "Quality",
+    best: "Best",
+    mediaSum: "Media on this page",
+    startAgain: "↻ Start again",
+    onText: "MediaLab Downloader is on",
+    onHint: "Downloads and videos of this browser go to MediaLab Downloader",
+    offText: "MediaLab Downloader is off",
+    offHint: "Downloads stay in the browser",
+    tabVideo: "Video",
+    tabAudio: "Audio",
+    connected: "connected",
+    disconnected: "not connected",
+  };
+  function applyLang(lang) {
+    const ar = lang === "ar";
+    const T = ar ? AR : EN;
+    document.documentElement.lang = ar ? "ar" : "en";
+    document.documentElement.dir = ar ? "rtl" : "ltr";
+    for (const b of pill.querySelectorAll("button[data-lang]")) {
+      b.classList.toggle("on", b.dataset.lang === (ar ? "ar" : "en"));
+    }
+    const setText = (sel, txt) => {
+      const el = document.querySelector(sel);
+      if (el) el.textContent = txt;
+    };
+    setText("#secSettings > summary", T.settingsSum);
+    const sizes = document.querySelectorAll("#secSettings .size > span");
+    if (sizes[0]) sizes[0].textContent = T.btnSize;
+    if (sizes[1]) sizes[1].textContent = T.btnStyle;
+    if (sizes[2]) sizes[2].textContent = T.btnAlpha;
+    setText("#scaleReset", T.btnReset);
+    setText("#secSettings .check > span", T.fullscreen);
+    setText("#secYoutube > summary", T.ytSum);
+    const h3s = document.querySelectorAll("#secYoutube .quick h3");
+    if (h3s[0]) h3s[0].textContent = T.ytLinkH3;
+    if (h3s[1]) h3s[1].textContent = T.qualityH3;
+    setText("#qpaste", T.paste);
+    setText('#qq button[data-q="best"]', T.best);
+    const ms = document.querySelector("#secMedia > summary");
+    if (ms && ms.firstChild && ms.firstChild.nodeType === 3) ms.firstChild.textContent = T.mediaSum + " ";
+    setText("#mediaClear", T.startAgain);
+    const enChk = document.getElementById("enabled");
+    const isOn = !enChk || enChk.checked;
+    setText("#onText", isOn ? T.onText : T.offText);
+    setText("#onHint", isOn ? T.onHint : T.offHint);
+    const tv = document.getElementById("tabVideo");
+    if (tv) tv.textContent = tv.textContent.replace(/^(Video|فيديو)/, T.tabVideo);
+    const ta = document.getElementById("tabAudio");
+    if (ta) ta.textContent = ta.textContent.replace(/^(Audio|صوت)/, T.tabAudio);
+    const st = document.getElementById("status");
+    if (st && /^(connected|متصل)$/i.test(st.textContent.trim())) st.textContent = T.connected;
+    else if (st && /^(not connected|غير متصل)$/i.test(st.textContent.trim())) st.textContent = T.disconnected;
+  }
+  const syncLater = (lang) => setTimeout(() => applyLang(lang), 250);
+  if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+    chrome.storage.local.get({ extLang: "" }, (o) => {
+      if (chrome.runtime && chrome.runtime.lastError) return;
+      const cur = o && (o.extLang === "ar" || o.extLang === "en")
+        ? o.extLang
+        : ((typeof navigator !== "undefined" && /^ar/i.test(navigator.language || "")) ? "ar" : "en");
+      applyLang(cur);
+      syncLater(cur);
+    });
+    for (const b of pill.querySelectorAll("button[data-lang]")) {
+      b.addEventListener("click", () => {
+        const lang = b.dataset.lang === "ar" ? "ar" : "en";
+        applyLang(lang);
+        chrome.storage.local.set({ extLang: lang }, () => void (chrome.runtime && chrome.runtime.lastError));
+      });
+    }
+  }
+})();

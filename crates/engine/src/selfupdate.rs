@@ -187,12 +187,15 @@ pub async fn download(client: &reqwest::Client, r: &Release, dir: &Path) -> anyh
 }
 
 /// `download`, telling `progress(bytes so far, total)` while it goes.
+/// Uses the multi-connection HTTP engine (up to 16 parallel connections) for maximum speed.
 pub async fn download_with_progress(
     client: &reqwest::Client,
     r: &Release,
     dir: &Path,
     progress: &(dyn Fn(u64, Option<u64>) + Send + Sync),
 ) -> anyhow::Result<PathBuf> {
+    use std::sync::atomic::Ordering;
+    use std::sync::{Arc, Mutex};
     std::fs::create_dir_all(dir)?;
     let dest = dir.join(format!("MediaLab-Downloader-Setup-{}.exe", r.version.trim_start_matches('v')));
     if dest.exists() {
@@ -207,33 +210,67 @@ pub async fn download_with_progress(
             let _ = std::fs::remove_file(e.path());
         }
     }
-    let mut resp = client
-        .get(r.setup_url())
-        .header(reqwest::header::USER_AGENT, crate::config::DEFAULT_USER_AGENT)
-        .send_ordered()
-        .await?
-        .error_for_status()?;
-    use std::io::Write;
-    let tmp = dest.with_extension("download");
-    let mut file = std::fs::File::create(&tmp)?;
-    let mut h = Sha256::new();
-    let mut total: u64 = 0;
-    let size = resp.content_length().or_else(|| (r.size > 0).then_some(r.size));
-    progress(0, size);
-    while let Some(chunk) = resp.chunk().await? {
-        total += chunk.len() as u64;
-        progress(total, size);
-        if total > MAX_SETUP_BYTES {
-            drop(file);
-            let _ = std::fs::remove_file(&tmp);
+    let url = r.setup_url();
+    let probed = crate::http::probe(client, &url, &crate::model::RequestHeaders::default(), crate::config::DEFAULT_USER_AGENT).await?;
+    let total_size = probed.total_size.or_else(|| (r.size > 0).then_some(r.size));
+    if let Some(sz) = total_size {
+        if sz > MAX_SETUP_BYTES {
             anyhow::bail!("the update is far bigger than expected");
         }
-        h.update(&chunk);
-        file.write_all(&chunk)?;
     }
-    file.flush()?;
-    drop(file);
-    let got: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
+    progress(0, total_size);
+
+    let tmp = dest.with_extension("download");
+    let _ = std::fs::remove_file(&tmp);
+    let shared = Arc::new(crate::http::Shared::new(client.clone(), crate::limiter::SpeedLimiter::new(0)));
+    let job = crate::http_download::HttpJob {
+        url,
+        headers: crate::model::RequestHeaders::default(),
+        user_agent: crate::config::DEFAULT_USER_AGENT.to_string(),
+        total_size: probed.total_size,
+        resumable: probed.resumable,
+        part_path: tmp.clone(),
+        connections: 16,
+        min_split: 256 * 1024,
+        retries: 5,
+        progress_base: 0,
+        max_request: None,
+        limiter: Arc::new(crate::limiter::SpeedLimiter::new(0)),
+        check: crate::http_download::FileCheck::new(probed.version, probed.opening),
+    };
+    let segs: crate::http_download::SegTable = Arc::new(Mutex::new(Vec::new()));
+    let dl_prog = Arc::new(crate::http::Progress::default());
+    let cancel = tokio_util::sync::CancellationToken::new();
+
+    let dl_fut = crate::http_download::download(shared, job, segs, dl_prog.clone(), cancel.clone());
+    tokio::pin!(dl_fut);
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(120));
+    let mut last_bytes = 0u64;
+    let res = loop {
+        tokio::select! {
+            r = &mut dl_fut => break r,
+            _ = tick.tick() => {
+                let b = dl_prog.bytes.load(Ordering::Relaxed);
+                if b > MAX_SETUP_BYTES {
+                    cancel.cancel();
+                    let _ = std::fs::remove_file(&tmp);
+                    anyhow::bail!("the update is far bigger than expected");
+                }
+                if b != last_bytes {
+                    last_bytes = b;
+                    progress(b, total_size);
+                }
+            }
+        }
+    };
+    if let Err(e) = res {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    let final_bytes = dl_prog.bytes.load(Ordering::Relaxed);
+    progress(final_bytes, total_size);
+
+    let got = file_sha256(&tmp)?;
     if !got.eq_ignore_ascii_case(&r.sha256) {
         let _ = std::fs::remove_file(&tmp);
         anyhow::bail!("the downloaded installer does not match version.json (sha256 {got})");
