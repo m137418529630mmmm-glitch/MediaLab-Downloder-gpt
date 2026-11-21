@@ -224,7 +224,7 @@ pub async fn download_with_progress(
     let _ = std::fs::remove_file(&tmp);
     let shared = Arc::new(crate::http::Shared::new(client.clone(), crate::limiter::SpeedLimiter::new(0)));
     let job = crate::http_download::HttpJob {
-        url,
+        url: probed.final_url,
         headers: crate::model::RequestHeaders::default(),
         user_agent: crate::config::DEFAULT_USER_AGENT.to_string(),
         total_size: probed.total_size,
@@ -236,13 +236,13 @@ pub async fn download_with_progress(
         progress_base: 0,
         max_request: None,
         limiter: Arc::new(crate::limiter::SpeedLimiter::new(0)),
-        check: crate::http_download::FileCheck::new(probed.version, probed.opening),
+        check: crate::http_download::FileCheck::new(probed.etag, None),
     };
     let segs: crate::http_download::SegTable = Arc::new(Mutex::new(Vec::new()));
     let dl_prog = Arc::new(crate::http::Progress::default());
     let cancel = tokio_util::sync::CancellationToken::new();
 
-    let dl_fut = crate::http_download::download(shared, job, segs, dl_prog.clone(), cancel.clone());
+    let dl_fut = crate::http_download::run(shared, job, segs, dl_prog.clone(), cancel.clone());
     tokio::pin!(dl_fut);
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(120));
     let mut last_bytes = 0u64;
